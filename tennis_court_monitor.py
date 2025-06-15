@@ -1251,17 +1251,25 @@ def run_flask():
 def main():
     try:
         # 인증 정보 로드
-        if not os.path.exists("auth.txt"):
-            print("❌ auth.txt 파일이 존재하지 않습니다.")
-            return
+        username = None
+        password = None
+        
+        # auth.txt 파일에서 인증 정보 로드 시도
+        if os.path.exists("auth.txt"):
+            with open("auth.txt", 'r', encoding='utf-8') as f:
+                lines = f.read().strip().split('\n')
+                if len(lines) >= 2:
+                    username = lines[0].strip()
+                    password = lines[1].strip()
+        
+        # auth.txt 파일이 없거나 형식이 잘못된 경우 환경 변수에서 로드
+        if not username or not password:
+            username = os.environ.get("WebId")
+            password = os.environ.get("WebPassword")
             
-        with open("auth.txt", 'r', encoding='utf-8') as f:
-            lines = f.read().strip().split('\n')
-            if len(lines) < 2:
-                print("❌ auth.txt 파일 형식이 올바르지 않습니다.")
+            if not username or not password:
+                print("❌ 인증 정보를 찾을 수 없습니다. auth.txt 파일 또는 환경 변수(WebId, WebPassword)를 확인해주세요.")
                 return
-            username = lines[0].strip()
-            password = lines[1].strip()
         
         # 웹 인터페이스 설정
         create_templates_dir()
