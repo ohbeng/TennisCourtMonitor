@@ -9,7 +9,7 @@ MonitoringTable.txt에 정의된 시설과 시간대를 기반으로
 import requests
 from bs4 import BeautifulSoup
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import urllib3
 import re
@@ -24,6 +24,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 app = Flask(__name__)
 scheduler = None
 monitoring_results = []
+
+KST = timezone(timedelta(hours=9))
 
 class TennisCourtScheduler:
     def __init__(self, username, password, monitoring_file="MonitoringTable.txt"):
@@ -69,7 +71,7 @@ class TennisCourtScheduler:
         """로깅 설정"""
         try:
             # 로그 파일명에 타임스탬프 추가
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
             log_file = os.path.join(self.log_dir, f"tennis_court_monitor_{timestamp}.log")
             
             # 로깅 설정
@@ -88,7 +90,7 @@ class TennisCourtScheduler:
     def save_results(self, results):
         """결과를 파일로 저장"""
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
             filename = os.path.join(self.log_dir, f"available_courts_{timestamp}.txt")
             
             with open(filename, 'w', encoding='utf-8') as f:
@@ -344,8 +346,8 @@ class TennisCourtScheduler:
             all_available = []
             all_courts = []
             
-            for i in range(5):
-                date = datetime.now() + timedelta(days=i)
+            for i in range(4):
+                date = datetime.now(KST) + timedelta(days=i)
                 date_str = date.strftime('%Y-%m-%d')
                 
                 print(f"\n📅 {date_str} 모니터링 중...")
@@ -1051,10 +1053,14 @@ def index():
                                     }
                                     facilities[court.facility_name][court.date].push(court);
                                 });
-                                
-                                // HTML 생성
+                                // 탄천실내가 맨 위로 오도록 정렬
+                                const facilityOrder = (a, b) => {
+                                    if (a === '탄천실내') return -1;
+                                    if (b === '탄천실내') return 1;
+                                    return a.localeCompare(b, 'ko');
+                                };
                                 let html = '';
-                                for (const [facility, dates] of Object.entries(facilities)) {
+                                for (const [facility, dates] of Object.entries(facilities).sort((a, b) => facilityOrder(a[0], b[0]))) {
                                     html += `
                                         <div class="facility-section">
                                             <div class="facility-header" onclick="toggleSection(this)">
@@ -1063,7 +1069,6 @@ def index():
                                             </div>
                                             <div class="facility-content" style="display: block">
                                     `;
-                                    
                                     for (const [date, courts] of Object.entries(dates)) {
                                         html += `
                                             <div class="date-section">
@@ -1094,13 +1099,11 @@ def index():
                                             </div>
                                         `;
                                     }
-                                    
                                     html += `
+                                            </div>
                                         </div>
-                                    </div>
-                                `;
+                                    `;
                                 }
-                                
                                 allAvailableCourts.innerHTML = html;
                             } else {
                                 allAvailableCourts.innerHTML = '<p>예약 가능한 코트가 없습니다.</p>';
@@ -1123,15 +1126,18 @@ def index():
                                 }
                                 facilities[court.facility_name][court.date].push(court);
                             });
-                            
-                            // HTML 생성
+                            // 탄천실내가 맨 위로 오도록 정렬
+                            const facilityOrder = (a, b) => {
+                                if (a === '탄천실내') return -1;
+                                if (b === '탄천실내') return 1;
+                                return a.localeCompare(b, 'ko');
+                            };
                             let html = '';
-                            for (const [facility, dates] of Object.entries(facilities)) {
+                            for (const [facility, dates] of Object.entries(facilities).sort((a, b) => facilityOrder(a[0], b[0]))) {
                                 // 시설에 예약 가능한 코트가 있는지 확인
                                 const hasAvailableCourts = Object.values(dates).some(courts => 
                                     courts.some(court => court.is_available)
                                 );
-                                
                                 html += `
                                     <div class="facility-section">
                                         <div class="facility-header" onclick="toggleSection(this)">
@@ -1140,11 +1146,9 @@ def index():
                                         </div>
                                         <div class="facility-content" style="display: ${hasAvailableCourts ? 'block' : 'none'}">
                                 `;
-                                
                                 for (const [date, courts] of Object.entries(dates)) {
                                     // 해당 날짜에 예약 가능한 코트가 있는지 확인
                                     const hasAvailableCourts = courts.some(court => court.is_available);
-                                    
                                     html += `
                                         <div class="date-section">
                                             <div class="date-header" onclick="toggleSection(this)">
@@ -1176,13 +1180,11 @@ def index():
                                         </div>
                                     `;
                                 }
-                                
                                 html += `
                                         </div>
                                     </div>
                                 `;
                             }
-                            
                             allCourts.innerHTML = html;
                         } else {
                             allCourts.innerHTML = '<p>코트 정보를 불러올 수 없습니다.</p>';
@@ -1239,7 +1241,7 @@ def get_results():
     response_data = {
         'results': available_results,
         'all_courts': all_courts,
-        'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        'last_update': datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
     }
     
     return jsonify(response_data)
