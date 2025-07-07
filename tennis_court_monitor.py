@@ -344,7 +344,7 @@ class TennisCourtScheduler:
             all_available = []
             all_courts = []
             
-            for i in range(4):
+            for i in range(5):
                 date = datetime.now() + timedelta(days=i)
                 date_str = date.strftime('%Y-%m-%d')
                 
