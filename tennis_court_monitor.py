@@ -17,6 +17,9 @@ import logging
 import shutil
 from flask import Flask, render_template, jsonify
 import threading
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # SSL 경고 메시지 비활성화
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -24,6 +27,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 app = Flask(__name__)
 scheduler = None
 monitoring_results = []
+last_email_sent = {}  # 이메일 전송 기록을 저장
 
 KST = timezone(timedelta(hours=9))
 
@@ -1244,7 +1248,134 @@ def get_results():
         'last_update': datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
     }
     
+    # 이메일 알림 확인 및 전송
+    check_and_send_email(available_results)
+    
     return jsonify(response_data)
+
+def send_email_notification(available_courts):
+    """예약 가능한 코트가 있을 때 이메일 전송"""
+    try:
+        # 이메일 설정 (Gmail 예시)
+        sender_email = os.environ.get("EMAIL_SENDER", "your_email@gmail.com")
+        sender_password = os.environ.get("EMAIL_PASSWORD", "your_app_password")
+        receiver_email = "obeng@naver.com"
+        
+        if not sender_email or not sender_password:
+            print("⚠️ 이메일 설정이 없습니다. EMAIL_SENDER, EMAIL_PASSWORD 환경변수를 설정해주세요.")
+            return
+        
+        # 이메일 내용 생성
+        subject = "🎾 테니스 코트 예약 가능 알림"
+        
+        # HTML 형식의 이메일 내용
+        html_content = """
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; }
+                .court-item { 
+                    background-color: #e8f5e9; 
+                    padding: 10px; 
+                    margin: 5px 0; 
+                    border-radius: 5px;
+                    border-left: 5px solid #4CAF50;
+                }
+                .header { color: #4CAF50; font-weight: bold; }
+            </style>
+        </head>
+        <body>
+            <h2 class="header">🎾 예약 가능한 테니스 코트가 있습니다!</h2>
+            <p>다음 코트들이 예약 가능합니다:</p>
+        """
+        
+        # 날짜별로 그룹화
+        by_date = {}
+        for court in available_courts:
+            date = court['date']
+            if date not in by_date:
+                by_date[date] = []
+            by_date[date].append(court)
+        
+        # 날짜별로 정렬하여 출력
+        for date in sorted(by_date.keys()):
+            html_content += f"<h3>📅 {date}</h3>"
+            
+            # 시설별로 그룹화
+            by_facility = {}
+            for court in by_date[date]:
+                facility = court['facility_name']
+                if facility not in by_facility:
+                    by_facility[facility] = []
+                by_facility[facility].append(court)
+            
+            # 시설별로 정렬하여 출력
+            for facility in sorted(by_facility.keys()):
+                html_content += f"<h4>🏟️ {facility}</h4>"
+                for court in sorted(by_facility[facility], key=lambda x: x['time']):
+                    html_content += f"""
+                    <div class="court-item">
+                        <strong>{court['court']}</strong> - {court['time']}
+                    </div>
+                    """
+        
+        html_content += """
+            <br>
+            <p><small>이 메일은 자동으로 발송되었습니다.</small></p>
+        </body>
+        </html>
+        """
+        
+        # 이메일 메시지 생성
+        msg = MIMEMultipart('alternative')
+        msg['From'] = sender_email
+        msg['To'] = receiver_email
+        msg['Subject'] = subject
+        
+        # HTML 내용 추가
+        html_part = MIMEText(html_content, 'html', 'utf-8')
+        msg.attach(html_part)
+        
+        # Gmail SMTP 서버 연결 및 이메일 전송
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+        
+        print(f"✅ 이메일 전송 완료: {receiver_email}")
+        
+    except Exception as e:
+        print(f"❌ 이메일 전송 실패: {e}")
+
+def check_and_send_email(available_results):
+    """예약 가능한 코트를 확인하고 이메일 전송"""
+    try:
+        # FAC26(탄천실내) 또는 FAC61(수내)에서 예약 가능한 코트 필터링
+        target_facilities = ['FAC26(탄천실내)', 'FAC61(수내)']
+        target_courts = []
+        
+        for result in available_results:
+            if any(facility in result['facility_name'] for facility in target_facilities):
+                target_courts.append(result)
+        
+        if target_courts:
+            # 이메일 전송 기록 확인 (중복 전송 방지)
+            current_time = datetime.now(KST)
+            email_key = current_time.strftime('%Y-%m-%d')
+            
+            if email_key not in last_email_sent:
+                send_email_notification(target_courts)
+                last_email_sent[email_key] = current_time
+                print(f"📧 이메일 알림 전송: {len(target_courts)}개 코트")
+            else:
+                # 같은 날에 이미 이메일을 보냈으면 1시간 후에 다시 보낼 수 있도록
+                time_diff = current_time - last_email_sent[email_key]
+                if time_diff.total_seconds() > 3600:  # 1시간
+                    send_email_notification(target_courts)
+                    last_email_sent[email_key] = current_time
+                    print(f"📧 이메일 알림 재전송: {len(target_courts)}개 코트")
+        
+    except Exception as e:
+        print(f"❌ 이메일 확인 중 오류 발생: {e}")
 
 def run_flask():
     """Flask 서버 실행"""
