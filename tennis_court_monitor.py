@@ -30,6 +30,7 @@ app = Flask(__name__)
 scheduler = None
 monitoring_results = []
 last_email_sent = {}  # 이메일 전송 기록을 저장
+last_available_courts = {}  # 이전 예약 가능한 코트 정보를 저장
 
 KST = timezone(timedelta(hours=9))
 
@@ -1396,17 +1397,25 @@ def check_and_send_email(available_results):
         print(f"🎯 타겟 시설 예약 가능 코트 수: {len(target_courts)}")
         
         if target_courts:
-            # 카톡 전송 기록 확인 (중복 전송 방지)
+            # 현재 예약 가능한 코트 정보를 문자열로 변환하여 비교용 키 생성
+            current_courts_key = ""
+            for court in sorted(target_courts, key=lambda x: (x['date'], x['facility_name'], x['court'], x['time'])):
+                current_courts_key += f"{court['facility_name']}_{court['court']}_{court['date']}_{court['time']}|"
+            
             current_time = datetime.now(KST)
             email_key = current_time.strftime('%Y-%m-%d')
             
             print(f"📅 현재 날짜 키: {email_key}")
-            print(f"📧 마지막 카톡 전송 기록: {last_email_sent}")
+            print(f"📧 마지막 이메일 전송 기록: {last_email_sent}")
+            print(f"📧 이전 예약 가능 코트 정보: {last_available_courts.get(email_key, '없음')}")
+            print(f"📧 현재 예약 가능 코트 정보: {current_courts_key}")
             
+            # 새로운 날짜인 경우
             if email_key not in last_email_sent:
                 print("📧 새로운 날짜 - 이메일 전송 시작")
                 send_email_notification(target_courts)
                 last_email_sent[email_key] = current_time
+                last_available_courts[email_key] = current_courts_key
                 print(f"✅ 이메일 알림 전송 완료: {len(target_courts)}개 코트")
             else:
                 # 같은 날에 이미 이메일을 보냈으면 1시간 후에 다시 보낼 수 있도록
@@ -1414,10 +1423,17 @@ def check_and_send_email(available_results):
                 print(f"⏰ 마지막 전송으로부터 경과 시간: {time_diff.total_seconds()}초")
                 
                 if time_diff.total_seconds() > 3600:  # 1시간
-                    print("📧 1시간 경과 - 이메일 재전송 시작")
-                    send_email_notification(target_courts)
-                    last_email_sent[email_key] = current_time
-                    print(f"✅ 이메일 알림 재전송 완료: {len(target_courts)}개 코트")
+                    # 이전 예약 가능한 코트 정보와 현재 정보 비교
+                    previous_courts_key = last_available_courts.get(email_key, "")
+                    
+                    if current_courts_key != previous_courts_key:
+                        print("📧 1시간 경과 + 내용 변동 - 이메일 재전송 시작")
+                        send_email_notification(target_courts)
+                        last_email_sent[email_key] = current_time
+                        last_available_courts[email_key] = current_courts_key
+                        print(f"✅ 이메일 알림 재전송 완료: {len(target_courts)}개 코트")
+                    else:
+                        print("⏳ 1시간 경과했지만 내용 변동 없음 - 이메일 전송 건너뜀")
                 else:
                     print("⏳ 1시간 미경과 - 이메일 전송 건너뜀")
         else:
