@@ -1385,7 +1385,7 @@ def check_and_send_email(available_results):
         print(f"\n🔍 예약 가능 알림 확인 시작 - 전체 예약 가능 코트 수: {len(available_results)}")
         
         # 탄천실내, 수내, 야탑에서 예약 가능한 코트 필터링
-        target_facilities = ['탄천실내', '수내', "야탑"]
+        target_facilities = ['탄천실내', '수내']
         target_courts = []
         
         for result in available_results:
