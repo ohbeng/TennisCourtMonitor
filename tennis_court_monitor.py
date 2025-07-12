@@ -20,6 +20,8 @@ import threading
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import requests
+import json
 
 # SSL 경고 메시지 비활성화
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1247,22 +1249,34 @@ def get_results():
         'all_courts': all_courts,
         'last_update': datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
     }
-    
-    # 이메일 알림 확인 및 전송
-    check_and_send_email(available_results)
+
     
     return jsonify(response_data)
+
+
 
 def send_email_notification(available_courts):
     """예약 가능한 코트가 있을 때 이메일 전송"""
     try:
+        print(f"\n📧 이메일 전송 시작 - {len(available_courts)}개 코트")
+        
         # 이메일 설정 (Gmail 예시)
         sender_email = os.environ.get("EMAIL_SENDER", "your_email@gmail.com")
         sender_password = os.environ.get("EMAIL_PASSWORD", "your_app_password")
-        receiver_email = "obeng@naver.com"
+        receiver_emails_str = os.environ.get("EMAIL_RECEIVER", "your_email@gmail.com")
+        
+        # 수신자 이메일을 쉼표로 구분하여 리스트로 변환
+        receiver_emails = [email.strip() for email in receiver_emails_str.split(',')]
+        
+        print(f"📧 발신자: {sender_email}")
+        print(f"📧 수신자: {receiver_emails}")
         
         if not sender_email or not sender_password:
             print("⚠️ 이메일 설정이 없습니다. EMAIL_SENDER, EMAIL_PASSWORD 환경변수를 설정해주세요.")
+            return
+        
+        if sender_email == "your_email@gmail.com" or sender_password == "your_app_password":
+            print("⚠️ 기본값이 설정되어 있습니다. 실제 이메일과 앱 비밀번호로 변경해주세요.")
             return
         
         # 이메일 내용 생성
@@ -1326,56 +1340,93 @@ def send_email_notification(available_courts):
         </html>
         """
         
-        # 이메일 메시지 생성
-        msg = MIMEMultipart('alternative')
-        msg['From'] = sender_email
-        msg['To'] = receiver_email
-        msg['Subject'] = subject
+        print("📧 이메일 내용 생성 완료")
         
-        # HTML 내용 추가
-        html_part = MIMEText(html_content, 'html', 'utf-8')
-        msg.attach(html_part)
+        print("📧 SMTP 서버 연결 시도...")
         
         # Gmail SMTP 서버 연결 및 이메일 전송
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            print("📧 SMTP 서버 연결 성공")
+            print("📧 로그인 시도...")
             server.login(sender_email, sender_password)
-            server.send_message(msg)
+            print("📧 로그인 성공")
+            
+            # 모든 수신자에게 이메일 전송
+            for receiver_email in receiver_emails:
+                try:
+                    # 이메일 메시지 생성
+                    msg = MIMEMultipart('alternative')
+                    msg['From'] = sender_email
+                    msg['To'] = receiver_email
+                    msg['Subject'] = subject
+                    
+                    # HTML 내용 추가
+                    html_part = MIMEText(html_content, 'html', 'utf-8')
+                    msg.attach(html_part)
+                    
+                    print(f"📧 이메일 전송 중: {receiver_email}")
+                    server.send_message(msg)
+                    print(f"✅ 이메일 전송 완료: {receiver_email}")
+                    
+                except Exception as e:
+                    print(f"❌ 이메일 전송 실패 ({receiver_email}): {e}")
         
-        print(f"✅ 이메일 전송 완료: {receiver_email}")
+        print(f"✅ 모든 수신자에게 이메일 전송 완료: {len(receiver_emails)}명")
         
     except Exception as e:
         print(f"❌ 이메일 전송 실패: {e}")
+        import traceback
+        traceback.print_exc()
 
 def check_and_send_email(available_results):
     """예약 가능한 코트를 확인하고 이메일 전송"""
     try:
-        # FAC26(탄천실내) 또는 FAC61(수내)에서 예약 가능한 코트 필터링
-        target_facilities = ['FAC26(탄천실내)', 'FAC61(수내)']
+        print(f"\n🔍 예약 가능 알림 확인 시작 - 전체 예약 가능 코트 수: {len(available_results)}")
+        
+        # 탄천실내, 수내, 야탑에서 예약 가능한 코트 필터링
+        target_facilities = ['탄천실내', '수내', "야탑"]
         target_courts = []
         
         for result in available_results:
+            print(f"  - {result['facility_name']} {result['court']} - {result['date']} {result['time']}")
             if any(facility in result['facility_name'] for facility in target_facilities):
                 target_courts.append(result)
+                print(f"    ✅ 타겟 시설 발견: {result['facility_name']}")
+        
+        print(f"🎯 타겟 시설 예약 가능 코트 수: {len(target_courts)}")
         
         if target_courts:
-            # 이메일 전송 기록 확인 (중복 전송 방지)
+            # 카톡 전송 기록 확인 (중복 전송 방지)
             current_time = datetime.now(KST)
             email_key = current_time.strftime('%Y-%m-%d')
             
+            print(f"📅 현재 날짜 키: {email_key}")
+            print(f"📧 마지막 카톡 전송 기록: {last_email_sent}")
+            
             if email_key not in last_email_sent:
+                print("📧 새로운 날짜 - 이메일 전송 시작")
                 send_email_notification(target_courts)
                 last_email_sent[email_key] = current_time
-                print(f"📧 이메일 알림 전송: {len(target_courts)}개 코트")
+                print(f"✅ 이메일 알림 전송 완료: {len(target_courts)}개 코트")
             else:
                 # 같은 날에 이미 이메일을 보냈으면 1시간 후에 다시 보낼 수 있도록
                 time_diff = current_time - last_email_sent[email_key]
+                print(f"⏰ 마지막 전송으로부터 경과 시간: {time_diff.total_seconds()}초")
+                
                 if time_diff.total_seconds() > 3600:  # 1시간
+                    print("📧 1시간 경과 - 이메일 재전송 시작")
                     send_email_notification(target_courts)
                     last_email_sent[email_key] = current_time
-                    print(f"📧 이메일 알림 재전송: {len(target_courts)}개 코트")
+                    print(f"✅ 이메일 알림 재전송 완료: {len(target_courts)}개 코트")
+                else:
+                    print("⏳ 1시간 미경과 - 이메일 전송 건너뜀")
+        else:
+            print("❌ 타겟 시설에서 예약 가능한 코트가 없습니다.")
         
     except Exception as e:
         print(f"❌ 이메일 확인 중 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
 
 def run_flask():
     """Flask 서버 실행"""
@@ -1430,6 +1481,9 @@ def main():
                 # 결과 업데이트
                 global monitoring_results
                 monitoring_results = results
+                
+                # 이메일 알림 확인 및 전송
+                check_and_send_email(results)
                 
                 # 1분 대기
                 time.sleep(60)
