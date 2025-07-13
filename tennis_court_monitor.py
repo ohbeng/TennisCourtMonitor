@@ -1280,8 +1280,34 @@ def send_email_notification(available_courts):
             print("⚠️ 기본값이 설정되어 있습니다. 실제 이메일과 앱 비밀번호로 변경해주세요.")
             return
         
-        # 이메일 내용 생성
-        subject = "🎾 테니스 코트 예약 가능 알림"
+        # 이메일 제목에 예약 가능한 날짜와 코트 정보 추가
+        if available_courts:
+            # 날짜별로 그룹화
+            dates = list(set(court['date'] for court in available_courts))
+            dates.sort()
+            
+            # 코트 정보 추출 (시설명 + 코트번호)
+            court_info = []
+            for court in available_courts:
+                court_name = f"{court['facility_name']} {court['court']}"
+                if court_name not in court_info:
+                    court_info.append(court_name)
+            
+            # 제목 길이 제한 (이메일 제목은 보통 60자 이내 권장)
+            if len(dates) == 1:
+                date_str = dates[0]
+            else:
+                date_str = f"{dates[0]}~{dates[-1]}"
+            
+            court_str = ""
+            if len(court_info) <= 3:
+                court_str = ", ".join(court_info)
+            else:
+                court_str = f"{court_info[0]} 외 {len(court_info)-1}개"
+            
+            subject = f"🎾 테니스 코트 예약 가능 - {date_str} {court_str}"
+        else:
+            subject = "🎾 테니스 코트 예약 가능 알림"
         
         # HTML 형식의 이메일 내용
         html_content = """
