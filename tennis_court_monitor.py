@@ -1384,6 +1384,15 @@ def check_and_send_email(available_results):
     try:
         print(f"\n🔍 예약 가능 알림 확인 시작 - 전체 예약 가능 코트 수: {len(available_results)}")
         
+        # 현재 시간 확인 (12:00 AM ~ 07:00 AM 사이에는 이메일 전송 안함)
+        current_time = datetime.now(KST)
+        current_hour = current_time.hour
+        
+        # 12:00 AM (0시) ~ 07:00 AM (7시) 사이인지 확인
+        if 0 <= current_hour < 7:
+            print(f"⏰ 현재 시간: {current_time.strftime('%H:%M')} - 12:00 AM ~ 07:00 AM 시간대이므로 이메일 전송을 건너뜁니다.")
+            return
+        
         # 탄천실내, 수내, 야탑에서 예약 가능한 코트 필터링
         target_facilities = ['탄천실내', '수내']
         target_courts = []
@@ -1402,7 +1411,6 @@ def check_and_send_email(available_results):
             for court in sorted(target_courts, key=lambda x: (x['date'], x['facility_name'], x['court'], x['time'])):
                 current_courts_key += f"{court['facility_name']}_{court['court']}_{court['date']}_{court['time']}|"
             
-            current_time = datetime.now(KST)
             email_key = current_time.strftime('%Y-%m-%d')
             
             print(f"📅 현재 날짜 키: {email_key}")
