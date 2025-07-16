@@ -1280,16 +1280,16 @@ def send_email_notification(available_courts):
             print("⚠️ 기본값이 설정되어 있습니다. 실제 이메일과 앱 비밀번호로 변경해주세요.")
             return
         
-        # 이메일 제목에 예약 가능한 날짜와 코트 정보 추가
+        # 이메일 제목에 예약 가능한 날짜, 코트, 시간 정보 추가
         if available_courts:
             # 날짜별로 그룹화
             dates = list(set(court['date'] for court in available_courts))
             dates.sort()
             
-            # 코트 정보 추출 (시설명 + 코트번호)
+            # 코트+시간 정보 추출 (시설명+코트번호+시간)
             court_info = []
             for court in available_courts:
-                court_name = f"{court['facility_name']} {court['court']}"
+                court_name = f"{court['facility_name']} {court['court']}({court['time']})"
                 if court_name not in court_info:
                     court_info.append(court_name)
             
@@ -1299,7 +1299,6 @@ def send_email_notification(available_courts):
             else:
                 date_str = f"{dates[0]}~{dates[-1]}"
             
-            court_str = ""
             if len(court_info) <= 3:
                 court_str = ", ".join(court_info)
             else:
@@ -1326,7 +1325,7 @@ def send_email_notification(available_courts):
             </style>
         </head>
         <body>
-            <h2 class="header">🎾 예약 가능한 테니스 코트가 있습니다!</h2>
+            <h2 class=\"header\">🎾 예약 가능한 테니스 코트가 있습니다!</h2>
             <p>다음 코트들이 예약 가능합니다:</p>
         """
         
@@ -1355,13 +1354,14 @@ def send_email_notification(available_courts):
                 html_content += f"<h4>🏟️ {facility}</h4>"
                 for court in sorted(by_facility[facility], key=lambda x: x['time']):
                     html_content += f"""
-                    <div class="court-item">
+                    <div class=\"court-item\">
                         <strong>{court['court']}</strong> - {court['time']}
                     </div>
                     """
         
         html_content += """
             <br>
+            <p><a href=\"https://res.isdc.co.kr/\" target=\"_blank\"><strong>예약하러가기</strong></a></p>
             <p><small>이 메일은 자동으로 발송되었습니다.</small></p>
         </body>
         </html>
