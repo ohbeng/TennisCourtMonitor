@@ -1141,28 +1141,22 @@ def index():
                             };
                             let html = '';
                             for (const [facility, dates] of Object.entries(facilities).sort((a, b) => facilityOrder(a[0], b[0]))) {
-                                // 시설에 예약 가능한 코트가 있는지 확인
-                                const hasAvailableCourts = Object.values(dates).some(courts => 
-                                    courts.some(court => court.is_available)
-                                );
                                 html += `
                                     <div class="facility-section">
                                         <div class="facility-header" onclick="toggleSection(this)">
                                             <span>${facility}</span>
-                                            <span class="toggle-icon">${hasAvailableCourts ? '▲' : '▼'}</span>
+                                            <span class="toggle-icon">▲</span>
                                         </div>
-                                        <div class="facility-content" style="display: ${hasAvailableCourts ? 'block' : 'none'}">
+                                        <div class="facility-content" style="display: block">
                                 `;
                                 for (const [date, courts] of Object.entries(dates)) {
-                                    // 해당 날짜에 예약 가능한 코트가 있는지 확인
-                                    const hasAvailableCourts = courts.some(court => court.is_available);
                                     html += `
                                         <div class="date-section">
                                             <div class="date-header" onclick="toggleSection(this)">
                                                 <span>${date}</span>
-                                                <span class="toggle-icon">${hasAvailableCourts ? '▲' : '▼'}</span>
+                                                <span class="toggle-icon">▲</span>
                                             </div>
-                                            <div class="date-content" style="display: ${hasAvailableCourts ? 'block' : 'none'}">
+                                            <div class="date-content" style="display: block">
                                                 <table class="status-table">
                                                     <thead>
                                                         <tr>
@@ -1414,9 +1408,9 @@ def check_and_send_email(available_results):
         current_time = datetime.now(KST)
         current_hour = current_time.hour
         
-        # 12:00 AM (0시) ~ 07:00 AM (7시) 사이인지 확인
-        if 0 <= current_hour < 7:
-            print(f"⏰ 현재 시간: {current_time.strftime('%H:%M')} - 12:00 AM ~ 07:00 AM 시간대이므로 이메일 전송을 건너뜁니다.")
+        # 12:00 AM (0시) ~ 07:01 AM (7시 1분) 사이인지 확인
+        if 0 <= current_hour < 7 or (current_hour == 7 and current_time.minute == 0):
+            print(f"⏰ 현재 시간: {current_time.strftime('%H:%M')} - 12:00 AM ~ 07:01 AM 시간대이므로 이메일 전송을 건너뜁니다.")
             return
         
         # 탄천실내, 수내, 야탑에서 예약 가능한 코트 필터링
