@@ -35,9 +35,9 @@ last_available_courts = {}  # 이전 예약 가능한 코트 정보를 저장
 KST = timezone(timedelta(hours=9))
 
 class TennisCourtScheduler:
-    def __init__(self, username, password, monitoring_file="MonitoringTable.txt"):
-        self.username = username
-        self.password = password
+    def __init__(self, accounts, monitoring_file="MonitoringTable.txt"):
+        self.accounts = accounts  # 계정 정보 리스트 [{'username': 'user1', 'password': 'pass1'}, ...]
+        self.current_account_index = 0  # 현재 사용 중인 계정 인덱스
         self.base_url = "https://res.isdc.co.kr"
         self.session = requests.Session()
         self.monitoring_file = monitoring_file
@@ -174,54 +174,115 @@ class TennisCourtScheduler:
         except Exception as e:
             print(f"❌ 모니터링 설정 로드 중 오류 발생: {e}")
 
+    def get_current_account(self):
+        """현재 사용할 계정 정보 반환"""
+        if not self.accounts:
+            return None, None
+        return self.accounts[self.current_account_index]['username'], self.accounts[self.current_account_index]['password']
+    
+    def switch_to_next_account(self):
+        """다음 계정으로 전환"""
+        if len(self.accounts) > 1:
+            self.current_account_index = (self.current_account_index + 1) % len(self.accounts)
+            print(f"🔄 계정 전환: {self.current_account_index + 1}번째 계정으로 변경")
+    
     def login(self):
-        """로그인 수행"""
-        if not self.username or not self.password:
+        """로그인 수행 - 실패 시 다음 계정으로 자동 전환"""
+        if not self.accounts:
             print("❌ 인증 정보가 없습니다. auth.txt 파일을 확인해주세요.")
             return False
         
-        try:
-            print("🔐 로그인 시도 중...")
+        # 모든 계정에 대해 로그인 시도
+        attempts = 0
+        max_attempts = len(self.accounts)
+        
+        while attempts < max_attempts:
+            username, password = self.get_current_account()
             
-            # 로그인 API 호출
-            login_api_url = f"{self.base_url}/rest_loginCheck.do"
-            login_data = {
-                'web_id': self.username,
-                'web_pw': self.password
-            }
-            
-            headers = {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Referer': f"{self.base_url}/login.do"
-            }
-            
-            api_response = self.session.post(login_api_url, data=login_data, headers=headers)
-            
-            if api_response.status_code == 200:
-                response_text = api_response.text.strip()
+            try:
+                print(f"🔐 로그인 시도 중... ({self.current_account_index + 1}/{len(self.accounts)}번째 계정: {username})")
                 
-                if response_text == "success":
-                    print("✅ 로그인 성공!")
-                    return True
-                elif response_text == "fail":
-                    print("❌ 로그인 실패: 아이디 또는 비밀번호가 잘못되었습니다.")
-                elif response_text == "no_id":
-                    print("❌ 로그인 실패: 존재하지 않는 아이디입니다.")
-                elif response_text == "fail_5":
-                    print("❌ 로그인 실패: 5회 이상 비밀번호 오류로 계정이 잠겼습니다.")
-                elif response_text == "black_list":
-                    print("❌ 로그인 실패: 공공시설예약 이용이 제한된 계정입니다.")
+                # 새 세션 생성 (계정 전환 시 세션 초기화)
+                self.session = requests.Session()
+                
+                # 로그인 API 호출
+                login_api_url = f"{self.base_url}/rest_loginCheck.do"
+                login_data = {
+                    'web_id': username,
+                    'web_pw': password
+                }
+                
+                headers = {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Referer': f"{self.base_url}/login.do"
+                }
+                
+                api_response = self.session.post(login_api_url, data=login_data, headers=headers)
+                
+                if api_response.status_code == 200:
+                    response_text = api_response.text.strip()
+                    
+                    if response_text == "success":
+                        print(f"✅ 로그인 성공! ({self.current_account_index + 1}번째 계정: {username})")
+                        return True
+                    elif response_text == "fail":
+                        print(f"❌ 로그인 실패: 아이디 또는 비밀번호가 잘못되었습니다. ({username})")
+                    elif response_text == "no_id":
+                        print(f"❌ 로그인 실패: 존재하지 않는 아이디입니다. ({username})")
+                    elif response_text == "fail_5":
+                        print(f"❌ 로그인 실패: 5회 이상 비밀번호 오류로 계정이 잠겼습니다. ({username})")
+                    elif response_text == "black_list":
+                        print(f"❌ 로그인 실패: 공공시설예약 이용이 제한된 계정입니다. ({username})")
+                    else:
+                        print(f"❌ 알 수 없는 로그인 응답: '{response_text}' ({username})")
                 else:
-                    print(f"❌ 알 수 없는 로그인 응답: '{response_text}'")
-            else:
-                print(f"❌ 로그인 API 요청 실패: HTTP {api_response.status_code}")
-            
-            return False
+                    print(f"❌ 로그인 API 요청 실패: HTTP {api_response.status_code} ({username})")
                 
-        except Exception as e:
-            print(f"❌ 로그인 중 오류 발생: {e}")
-            return False
+            except Exception as e:
+                print(f"❌ 로그인 중 오류 발생: {e} ({username})")
+            
+            # 다음 계정으로 전환
+            attempts += 1
+            if attempts < max_attempts:
+                self.switch_to_next_account()
+                time.sleep(2)  # 계정 전환 간 잠시 대기
+        
+        print("❌ 모든 계정에서 로그인 실패")
+        return False
+    
+    def get_timetable_with_retry(self, facility_id, date_str, max_retries=3):
+        """타임테이블 조회 (세션 만료 시 재로그인 처리)"""
+        for attempt in range(max_retries):
+            timetable_html = self.get_timetable(facility_id, date_str)
+            
+            if timetable_html is None:
+                print(f"⚠️  타임테이블 조회 실패 (시도 {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    print("🔄 다음 계정으로 전환하여 재시도...")
+                    self.switch_to_next_account()
+                    if not self.login():
+                        print("❌ 재로그인 실패")
+                        continue
+                    time.sleep(1)  # 잠시 대기
+                continue
+            
+            # 세션 만료 체크
+            if 'login.do' in timetable_html or '로그인' in timetable_html:
+                print(f"⚠️  세션 만료 감지 (시도 {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    print("🔄 다음 계정으로 전환하여 재로그인...")
+                    self.switch_to_next_account()
+                    if not self.login():
+                        print("❌ 재로그인 실패")
+                        continue
+                    time.sleep(1)  # 잠시 대기
+                continue
+            
+            return timetable_html
+        
+        print(f"❌ {max_retries}번 시도 후 타임테이블 조회 실패")
+        return None
     
     def get_timetable(self, facility_id, date_str):
         """타임테이블 조회"""
@@ -367,8 +428,8 @@ class TennisCourtScheduler:
                     
                     print(f"\n🏟️  {facility_name} ({facility_id}) 모니터링")
                     
-                    # 타임테이블 조회
-                    timetable_html = self.get_timetable(facility_id, date_str)
+                    # 타임테이블 조회 시 세션 만료 체크 및 재로그인 처리
+                    timetable_html = self.get_timetable_with_retry(facility_id, date_str)
                     if timetable_html:
                         # 예약 가능한 시간대 파싱
                         available_slots, all_slots = self.parse_timetable(timetable_html, facility_id, date_str)
@@ -1476,28 +1537,90 @@ def run_flask():
     """Flask 서버 실행"""
     app.run(host='0.0.0.0', port=5000, debug=False)
 
+def load_accounts():
+    """계정 정보를 로드하는 함수"""
+    accounts = []
+    
+    # auth.txt 파일에서 계정 정보 로드 시도
+    if os.path.exists("auth.txt"):
+        try:
+            with open("auth.txt", 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+                
+                # 한 줄에 username,password 형식 또는 두 줄씩 쌍으로 처리
+                i = 0
+                while i < len(lines):
+                    line = lines[i]
+                    
+                    # 쉼표로 구분된 경우 (username,password)
+                    if ',' in line:
+                        parts = line.split(',')
+                        if len(parts) >= 2:
+                            username = parts[0].strip()
+                            password = parts[1].strip()
+                            if username and password:
+                                accounts.append({'username': username, 'password': password})
+                                print(f"✅ 계정 로드: {username}")
+                        i += 1
+                    # 두 줄씩 쌍으로 처리 (첫 줄: username, 둘째 줄: password)
+                    elif i + 1 < len(lines):
+                        username = lines[i].strip()
+                        password = lines[i + 1].strip()
+                        if username and password:
+                            accounts.append({'username': username, 'password': password})
+                            print(f"✅ 계정 로드: {username}")
+                        i += 2
+                    else:
+                        i += 1
+                        
+        except Exception as e:
+            print(f"❌ auth.txt 파일 읽기 오류: {e}")
+    
+    # auth.txt에서 로드하지 못한 경우 환경 변수에서 로드
+    if not accounts:
+        # 기본 환경 변수 (WebId, WebPassword)
+        username = os.environ.get("WebId")
+        password = os.environ.get("WebPassword")
+        if username and password:
+            accounts.append({'username': username, 'password': password})
+            print(f"✅ 환경변수에서 계정 로드: {username}")
+        
+        # 다중 계정 환경 변수 (WebId1, WebPassword1, WebId2, WebPassword2, ...)
+        for i in range(1, 4):  # 최대 3개 계정
+            username = os.environ.get(f"WebId{i}")
+            password = os.environ.get(f"WebPassword{i}")
+            if username and password:
+                accounts.append({'username': username, 'password': password})
+                print(f"✅ 환경변수에서 계정 로드: {username}")
+    
+    return accounts
+
 def main():
     try:
-        # 인증 정보 로드
-        username = None
-        password = None
+        # 다중 계정 정보 로드
+        accounts = load_accounts()
         
-        # auth.txt 파일에서 인증 정보 로드 시도
-        if os.path.exists("auth.txt"):
-            with open("auth.txt", 'r', encoding='utf-8') as f:
-                lines = f.read().strip().split('\n')
-                if len(lines) >= 2:
-                    username = lines[0].strip()
-                    password = lines[1].strip()
+        if not accounts:
+            print("❌ 인증 정보를 찾을 수 없습니다.")
+            print("다음 중 하나의 방법으로 계정 정보를 설정해주세요:")
+            print("1. auth.txt 파일에 다음 형식으로 저장:")
+            print("   username1,password1")
+            print("   username2,password2")
+            print("   username3,password3")
+            print("   또는")
+            print("   username1")
+            print("   password1")
+            print("   username2")
+            print("   password2")
+            print("   username3")
+            print("   password3")
+            print("2. 환경 변수 설정:")
+            print("   WebId1, WebPassword1")
+            print("   WebId2, WebPassword2")
+            print("   WebId3, WebPassword3")
+            return
         
-        # auth.txt 파일이 없거나 형식이 잘못된 경우 환경 변수에서 로드
-        if not username or not password:
-            username = os.environ.get("WebId")
-            password = os.environ.get("WebPassword")
-            
-            if not username or not password:
-                print("❌ 인증 정보를 찾을 수 없습니다. auth.txt 파일 또는 환경 변수(WebId, WebPassword)를 확인해주세요.")
-                return
+        print(f"✅ 총 {len(accounts)}개의 계정이 로드되었습니다.")
         
         # 웹 인터페이스 설정
         create_templates_dir()
@@ -1505,9 +1628,9 @@ def main():
         create_html_template()
         create_css_file()
         
-        # 스케줄러 초기화
+        # 스케줄러 초기화 (다중 계정 전달)
         global scheduler
-        scheduler = TennisCourtScheduler(username, password)
+        scheduler = TennisCourtScheduler(accounts)
         
         # Flask 서버를 별도 스레드로 실행
         flask_thread = threading.Thread(target=run_flask)
@@ -1517,6 +1640,7 @@ def main():
         print("🌐 웹 서버가 시작되었습니다. http://localhost:5000 에서 확인하세요.")
         
         # 모니터링 실행
+        monitoring_count = 0
         while True:
             try:
                 # 모니터링 실행
@@ -1528,6 +1652,12 @@ def main():
                 
                 # 이메일 알림 확인 및 전송
                 check_and_send_email(results)
+                
+                # 5번 모니터링마다 계정 순환 (약 5분마다)
+                monitoring_count += 1
+                if monitoring_count % 5 == 0 and len(accounts) > 1:
+                    print(f"\n🔄 정기 계정 순환 (모니터링 {monitoring_count}회)")
+                    scheduler.switch_to_next_account()
                 
                 # 1분 대기
                 time.sleep(60)
