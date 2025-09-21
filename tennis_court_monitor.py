@@ -1475,7 +1475,7 @@ def check_and_send_email(available_results):
             return
         
         # 탄천실내, 수내, 야탑에서 예약 가능한 코트 필터링
-        target_facilities = ['탄천실내', '수내']
+        target_facilities = ['탄천실내', '수내', '야탑', '구미']
         target_courts = []
         
         for result in available_results:
