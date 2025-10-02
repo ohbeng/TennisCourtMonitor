@@ -40,6 +40,8 @@ class TennisCourtScheduler:
         self.current_account_index = 0  # 현재 사용 중인 계정 인덱스
         self.base_url = "https://res.isdc.co.kr"
         self.session = requests.Session()
+        # SSL 인증서 검증 비활성화
+        self.session.verify = False
         self.monitoring_file = monitoring_file
         self.facilities = []
         self.available_slots = []
@@ -204,6 +206,8 @@ class TennisCourtScheduler:
                 
                 # 새 세션 생성 (계정 전환 시 세션 초기화)
                 self.session = requests.Session()
+                # SSL 인증서 검증 비활성화
+                self.session.verify = False
                 
                 # 로그인 API 호출
                 login_api_url = f"{self.base_url}/rest_loginCheck.do"
@@ -218,7 +222,8 @@ class TennisCourtScheduler:
                     'Referer': f"{self.base_url}/login.do"
                 }
                 
-                api_response = self.session.post(login_api_url, data=login_data, headers=headers)
+                # SSL 인증서 검증 무시하고 요청
+                api_response = self.session.post(login_api_url, data=login_data, headers=headers, verify=False)
                 
                 if api_response.status_code == 200:
                     response_text = api_response.text.strip()
@@ -306,7 +311,7 @@ class TennisCourtScheduler:
             print(f"파라미터: {params}")
             
             # 타임테이블 조회
-            response = self.session.get(url, params=params)
+            response = self.session.get(url, params=params, verify=False)
             
             # 응답 상태 확인
             if response.status_code == 200:
