@@ -251,7 +251,7 @@ class TennisCourtScheduler:
             attempts += 1
             if attempts < max_attempts:
                 self.switch_to_next_account()
-                time.sleep(2)  # 계정 전환 간 잠시 대기
+                time.sleep(1)  # 계정 전환 간 잠시 대기
         
         print("❌ 모든 계정에서 로그인 실패")
         return False
