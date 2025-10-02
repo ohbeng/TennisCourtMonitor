@@ -256,7 +256,7 @@ class TennisCourtScheduler:
         print("❌ 모든 계정에서 로그인 실패")
         return False
     
-    def get_timetable_with_retry(self, facility_id, date_str, max_retries=3):
+    def get_timetable_with_retry(self, facility_id, date_str, max_retries=1):
         """타임테이블 조회 (세션 만료 시 재로그인 처리)"""
         for attempt in range(max_retries):
             timetable_html = self.get_timetable(facility_id, date_str)
