@@ -419,6 +419,11 @@ class TennisCourtScheduler:
             all_available = []
             all_courts = []
             
+            # 성공/실패 통계
+            total_requests = 0
+            successful_requests = 0
+            failed_requests = 0
+            
             for i in range(4):
                 date = datetime.now(KST) + timedelta(days=i)
                 date_str = date.strftime('%Y-%m-%d')
@@ -432,38 +437,62 @@ class TennisCourtScheduler:
                     time_slots = facility['times']
                     
                     print(f"\n🏟️  {facility_name} ({facility_id}) 모니터링")
+                    total_requests += 1
                     
-                    # 타임테이블 조회 시 세션 만료 체크 및 재로그인 처리
-                    timetable_html = self.get_timetable_with_retry(facility_id, date_str)
-                    if timetable_html:
-                        # 예약 가능한 시간대 파싱
-                        available_slots, all_slots = self.parse_timetable(timetable_html, facility_id, date_str)
-                        
-                        # 모든 코트 정보 저장
-                        for slot in all_slots:
-                            court_info = {
-                                'date': date_str,
-                                'facility_name': facility_name,
-                                'facility_id': facility_id,
-                                'court': slot['court'],
-                                'time': slot['time'],
-                                'is_available': slot['is_available'],
-                                'reservation_name': slot['reservation_name']
-                            }
-                            all_courts.append(court_info)
-                        
-                        # 모니터링 설정된 시간대와 비교
-                        for slot in available_slots:
-                            slot_time = slot['time']
-                            for target_time in time_slots:
-                                if self.time_ranges_match(slot_time, target_time):
-                                    all_available.append({
-                                        'facility_name': facility_name,
-                                        'facility_id': facility_id,
-                                        'date': date_str,
-                                        'time': slot_time,
-                                        'court': slot['court']
-                                    })
+                    try:
+                        # 타임테이블 조회 시 세션 만료 체크 및 재로그인 처리
+                        timetable_html = self.get_timetable_with_retry(facility_id, date_str)
+                        if timetable_html:
+                            # 예약 가능한 시간대 파싱
+                            available_slots, all_slots = self.parse_timetable(timetable_html, facility_id, date_str)
+                            
+                            # 모든 코트 정보 저장
+                            for slot in all_slots:
+                                court_info = {
+                                    'date': date_str,
+                                    'facility_name': facility_name,
+                                    'facility_id': facility_id,
+                                    'court': slot['court'],
+                                    'time': slot['time'],
+                                    'is_available': slot['is_available'],
+                                    'reservation_name': slot['reservation_name']
+                                }
+                                all_courts.append(court_info)
+                            
+                            # 모니터링 설정된 시간대와 비교
+                            for slot in available_slots:
+                                slot_time = slot['time']
+                                for target_time in time_slots:
+                                    if self.time_ranges_match(slot_time, target_time):
+                                        all_available.append({
+                                            'facility_name': facility_name,
+                                            'facility_id': facility_id,
+                                            'date': date_str,
+                                            'time': slot_time,
+                                            'court': slot['court']
+                                        })
+                            
+                            successful_requests += 1
+                            print(f"✅ {facility_name} 조회 성공 - 예약 가능: {len(available_slots)}개, 전체: {len(all_slots)}개")
+                        else:
+                            failed_requests += 1
+                            print(f"⚠️  {facility_name} 타임테이블 조회 실패 - 건너뛰고 계속 진행")
+                            # 실패해도 계속 진행
+                            continue
+                            
+                    except Exception as e:
+                        failed_requests += 1
+                        print(f"⚠️  {facility_name} 모니터링 중 오류 발생: {e} - 건너뛰고 계속 진행")
+                        # 개별 시설 오류가 발생해도 계속 진행
+                        continue
+            
+            # 모니터링 결과 요약
+            print(f"\n📊 모니터링 완료 요약:")
+            print(f"   - 전체 요청: {total_requests}개")
+            print(f"   - 성공: {successful_requests}개")
+            print(f"   - 실패: {failed_requests}개")
+            if total_requests > 0:
+                print(f"   - 성공률: {(successful_requests/total_requests*100):.1f}%")
             
             # 결과 출력
             if all_available:
@@ -475,13 +504,24 @@ class TennisCourtScheduler:
             
             print(f"\n📊 전체 코트 수: {len(all_courts)}")
             
-            # 결과를 파일로 저장
-            self.save_results(all_available)
+            # 부분적으로라도 성공한 경우 결과를 파일로 저장
+            if successful_requests > 0:
+                self.save_results(all_available)
+                if failed_requests > 0:
+                    print(f"💾 부분 성공 결과 저장 완료 ({successful_requests}/{total_requests} 성공)")
+                else:
+                    print(f"💾 결과 저장 완료 (모두 성공)")
+            elif failed_requests > 0:
+                print(f"⚠️  모든 요청 실패 - 결과 저장 생략")
             
+            # 실패가 있어도 성공한 데이터는 반환
             return all_available, all_courts
             
         except Exception as e:
-            print(f"❌ 모니터링 중 오류 발생: {e}")
+            print(f"❌ 모니터링 중 치명적 오류 발생: {e}")
+            # 치명적 오류가 발생해도 빈 리스트라도 반환하여 프로그램이 계속 실행되도록 함
+            import traceback
+            traceback.print_exc()
             return [], []
 
     def time_ranges_match(self, slot_time, target_time):
@@ -1297,22 +1337,38 @@ def index():
 def get_results():
     """현재 모니터링 결과 반환"""
     global monitoring_results, scheduler
-    available_results, all_courts = scheduler.monitor_courts()
     
-    print(f"\n📊 API 응답 - 예약 가능한 코트 수: {len(available_results)}")
-    print(f"📊 API 응답 - 전체 코트 수: {len(all_courts)}")
-    
-    # 결과를 날짜, 시설, 코트, 시간 순으로 정렬
-    all_courts.sort(key=lambda x: (x['date'], x['facility_name'], x['court'], x['time']))
-    
-    response_data = {
-        'results': available_results,
-        'all_courts': all_courts,
-        'last_update': datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
-    }
-
-    
-    return jsonify(response_data)
+    try:
+        available_results, all_courts = scheduler.monitor_courts()
+        
+        print(f"\n📊 API 응답 - 예약 가능한 코트 수: {len(available_results)}")
+        print(f"📊 API 응답 - 전체 코트 수: {len(all_courts)}")
+        
+        # 결과를 날짜, 시설, 코트, 시간 순으로 정렬
+        if all_courts:
+            all_courts.sort(key=lambda x: (x['date'], x['facility_name'], x['court'], x['time']))
+        
+        response_data = {
+            'results': available_results,
+            'all_courts': all_courts,
+            'last_update': datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'),
+            'status': 'success' if (available_results or all_courts) else 'no_data'
+        }
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        print(f"❌ API 요청 처리 중 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        # 오류 발생 시에도 기본 응답 반환
+        return jsonify({
+            'results': [],
+            'all_courts': [],
+            'last_update': datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'),
+            'status': 'error',
+            'error_message': str(e)
+        })
 
 
 
@@ -1555,9 +1611,14 @@ def send_email_notification(available_courts):
         traceback.print_exc()
 
 def check_and_send_email(available_results):
-    """예약 가능한 코트를 확인하고 이메일 전송"""
+    """예약 가능한 코트를 확인하고 이메일 전송 (부분 실패 상황에도 대응)"""
     try:
         print(f"\n🔍 예약 가능 알림 확인 시작 - 전체 예약 가능 코트 수: {len(available_results)}")
+        
+        # available_results가 비어있으면 종료
+        if not available_results:
+            print("📋 현재 조회된 예약 가능 코트가 없습니다")
+            return
         
         # 현재 시간 확인 (12:00 AM ~ 07:00 AM 사이에는 이메일 전송 안함)
         current_time = datetime.now(KST)
@@ -1572,6 +1633,7 @@ def check_and_send_email(available_results):
         target_facilities = ['탄천실내', '수내', '야탑', '구미']
         target_courts = []
         
+        print("🎯 타겟 시설 예약 가능 코트 확인:")
         for result in available_results:
             print(f"  - {result['facility_name']} {result['court']} - {result['date']} {result['time']}")
             if any(facility in result['facility_name'] for facility in target_facilities):
@@ -1596,10 +1658,14 @@ def check_and_send_email(available_results):
             # 새로운 날짜인 경우
             if email_key not in last_email_sent:
                 print("📧 새로운 날짜 - 이메일 전송 시작")
-                send_email_notification(target_courts)
-                last_email_sent[email_key] = current_time
-                last_available_courts[email_key] = current_courts_key
-                print(f"✅ 이메일 알림 전송 완료: {len(target_courts)}개 코트")
+                try:
+                    send_email_notification(target_courts)
+                    last_email_sent[email_key] = current_time
+                    last_available_courts[email_key] = current_courts_key
+                    print(f"✅ 이메일 알림 전송 완료: {len(target_courts)}개 코트")
+                except Exception as e:
+                    print(f"❌ 이메일 전송 실패: {e}")
+                    # 이메일 전송 실패해도 프로그램은 계속 실행
             else:
                 # 같은 날에 이미 이메일을 보냈으면 1시간 후에 다시 보낼 수 있도록
                 time_diff = current_time - last_email_sent[email_key]
@@ -1611,10 +1677,14 @@ def check_and_send_email(available_results):
                     
                     if current_courts_key != previous_courts_key:
                         print("📧 1시간 경과 + 내용 변동 - 이메일 재전송 시작")
-                        send_email_notification(target_courts)
-                        last_email_sent[email_key] = current_time
-                        last_available_courts[email_key] = current_courts_key
-                        print(f"✅ 이메일 알림 재전송 완료: {len(target_courts)}개 코트")
+                        try:
+                            send_email_notification(target_courts)
+                            last_email_sent[email_key] = current_time
+                            last_available_courts[email_key] = current_courts_key
+                            print(f"✅ 이메일 알림 재전송 완료: {len(target_courts)}개 코트")
+                        except Exception as e:
+                            print(f"❌ 이메일 재전송 실패: {e}")
+                            # 이메일 전송 실패해도 프로그램은 계속 실행
                     else:
                         print("⏳ 1시간 경과했지만 내용 변동 없음 - 이메일 전송 건너뜀")
                 else:
@@ -1773,8 +1843,14 @@ def main():
                 global monitoring_results
                 monitoring_results = results
                 
-                # 이메일 알림 확인 및 전송
-                check_and_send_email(results)
+                # 이메일 알림 확인 및 전송 (부분 실패 상황에서도 성공한 데이터가 있으면 전송)
+                try:
+                    check_and_send_email(results)
+                except Exception as e:
+                    print(f"❌ 이메일 확인/전송 중 오류: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # 이메일 전송 실패해도 모니터링은 계속
                 
                 # 5번 모니터링마다 계정 순환 (약 5분마다)
                 monitoring_count += 1
@@ -1783,10 +1859,13 @@ def main():
                     scheduler.switch_to_next_account()
                 
                 # 1분 대기
+                print(f"\n⏰ 다음 모니터링까지 60초 대기...")
                 time.sleep(60)
                 
             except Exception as e:
-                print(f"❌ 모니터링 중 오류 발생: {e}")
+                print(f"❌ 모니터링 루프 중 오류 발생: {e}")
+                import traceback
+                traceback.print_exc()
                 time.sleep(60)  # 오류 발생 시 1분 대기
         
     except Exception as e:
