@@ -1321,16 +1321,19 @@ def send_email_notification(available_courts):
     try:
         print(f"\n📧 이메일 전송 시작 - {len(available_courts)}개 코트")
         
-        # 이메일 설정 (Gmail 예시)
+        # 이메일 설정
         sender_email = os.environ.get("EMAIL_SENDER", "your_email@gmail.com")
         sender_password = os.environ.get("EMAIL_PASSWORD", "your_app_password")
         receiver_emails_str = os.environ.get("EMAIL_RECEIVER", "your_email@gmail.com")
+        smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+        smtp_port = int(os.environ.get("SMTP_PORT", "587"))  # TLS 포트로 변경
         
         # 수신자 이메일을 쉼표로 구분하여 리스트로 변환
         receiver_emails = [email.strip() for email in receiver_emails_str.split(',')]
         
         print(f"📧 발신자: {sender_email}")
         print(f"📧 수신자: {receiver_emails}")
+        print(f"📧 SMTP 서버: {smtp_server}:{smtp_port}")
         
         if not sender_email or not sender_password:
             print("⚠️ 이메일 설정이 없습니다. EMAIL_SENDER, EMAIL_PASSWORD 환경변수를 설정해주세요.")
@@ -1429,11 +1432,89 @@ def send_email_notification(available_courts):
         
         print("📧 이메일 내용 생성 완료")
         
-        print("📧 SMTP 서버 연결 시도...")
+        print(f"📧 SMTP 서버 연결 시도... ({smtp_server}:{smtp_port})")
         
-        # Gmail SMTP 서버 연결 및 이메일 전송
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            print("📧 SMTP 서버 연결 성공")
+        # SMTP 연결 시도 (TLS 방식 우선, 실패 시 SSL 방식 시도)
+        smtp_success = False
+        server = None
+        
+        # 방법 1: STARTTLS 방식 (포트 587)
+        if smtp_port == 587:
+            try:
+                print("📧 STARTTLS 방식으로 연결 시도...")
+                server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
+                server.set_debuglevel(0)
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                print("📧 SMTP 서버 연결 성공 (STARTTLS)")
+                smtp_success = True
+            except Exception as e:
+                print(f"⚠️ STARTTLS 연결 실패: {e}")
+                if server:
+                    try:
+                        server.quit()
+                    except:
+                        pass
+                server = None
+        
+        # 방법 2: SSL 방식 (포트 465)
+        if not smtp_success and smtp_port == 465:
+            try:
+                print("📧 SSL 방식으로 연결 시도...")
+                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+                server.set_debuglevel(0)
+                server.ehlo()
+                print("📧 SMTP 서버 연결 성공 (SSL)")
+                smtp_success = True
+            except Exception as e:
+                print(f"⚠️ SSL 연결 실패: {e}")
+                if server:
+                    try:
+                        server.quit()
+                    except:
+                        pass
+                server = None
+        
+        # SMTP 연결 실패 시 대체 포트로 재시도
+        if not smtp_success:
+            print("📧 대체 연결 방법 시도...")
+            for alt_port, use_tls in [(587, True), (465, False), (25, True)]:
+                try:
+                    print(f"📧 포트 {alt_port} 시도...")
+                    if use_tls:
+                        server = smtplib.SMTP(smtp_server, alt_port, timeout=30)
+                        server.set_debuglevel(0)
+                        server.ehlo()
+                        server.starttls()
+                        server.ehlo()
+                    else:
+                        server = smtplib.SMTP_SSL(smtp_server, alt_port, timeout=30)
+                        server.set_debuglevel(0)
+                        server.ehlo()
+                    print(f"📧 SMTP 서버 연결 성공 (포트 {alt_port})")
+                    smtp_success = True
+                    break
+                except Exception as e:
+                    print(f"⚠️ 포트 {alt_port} 연결 실패: {e}")
+                    if server:
+                        try:
+                            server.quit()
+                        except:
+                            pass
+                    server = None
+                    continue
+        
+        if not smtp_success or server is None:
+            print("❌ 모든 SMTP 연결 방법 실패")
+            print("💡 해결 방법:")
+            print("   1. 네트워크 연결 확인")
+            print("   2. 방화벽 설정 확인 (포트 587, 465 허용)")
+            print("   3. SMTP 서버 주소 확인")
+            print("   4. Gmail의 경우 '앱 비밀번호' 사용 필요")
+            return
+        
+        try:
             print("📧 로그인 시도...")
             server.login(sender_email, sender_password)
             print("📧 로그인 성공")
@@ -1457,8 +1538,16 @@ def send_email_notification(available_courts):
                     
                 except Exception as e:
                     print(f"❌ 이메일 전송 실패 ({receiver_email}): {e}")
+            
+            print(f"✅ 모든 수신자에게 이메일 전송 완료: {len(receiver_emails)}명")
         
-        print(f"✅ 모든 수신자에게 이메일 전송 완료: {len(receiver_emails)}명")
+        finally:
+            if server:
+                try:
+                    server.quit()
+                    print("📧 SMTP 연결 종료")
+                except:
+                    pass
         
     except Exception as e:
         print(f"❌ 이메일 전송 실패: {e}")
@@ -1542,6 +1631,32 @@ def run_flask():
     """Flask 서버 실행"""
     app.run(host='0.0.0.0', port=5000, debug=False)
 
+def load_email_config():
+    """email_config.txt 파일에서 이메일 설정을 로드하여 환경 변수에 설정"""
+    email_config_file = "email_config.txt"
+    if os.path.exists(email_config_file):
+        try:
+            with open(email_config_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # 주석과 빈 줄 건너뛰기
+                    if not line or line.startswith('#'):
+                        continue
+                    # KEY=VALUE 형식 파싱
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        # 기본값이 아닌 경우에만 환경 변수 설정
+                        if value and value not in ['your_email@gmail.com', 'your_app_password', 'receiver1@gmail.com,receiver2@gmail.com']:
+                            os.environ[key] = value
+                            if key == 'EMAIL_PASSWORD':
+                                print(f"✅ {key} 설정됨: ****")
+                            else:
+                                print(f"✅ {key} 설정됨: {value}")
+        except Exception as e:
+            print(f"❌ email_config.txt 파일 읽기 오류: {e}")
+
 def load_accounts():
     """계정 정보를 로드하는 함수"""
     accounts = []
@@ -1602,6 +1717,9 @@ def load_accounts():
 
 def main():
     try:
+        # 이메일 설정 로드
+        load_email_config()
+        
         # 다중 계정 정보 로드
         accounts = load_accounts()
         
