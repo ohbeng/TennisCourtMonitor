@@ -1662,7 +1662,7 @@ def check_and_send_email(available_results):
                 print("📧 새로운 날짜 - 이메일 전송 시작")
                 try:
                     send_email_notification(target_courts)
-                    last_email_sent[email_key] = current_time
+                    last_email_sent[email_key] = current_time - 3600  # 1시간 전으로 설정하여 즉시 재전송 가능
                     last_available_courts[email_key] = current_courts_key
                     print(f"✅ 이메일 알림 전송 완료: {len(target_courts)}개 코트")
                 except Exception as e:
