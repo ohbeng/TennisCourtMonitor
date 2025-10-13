@@ -1374,81 +1374,28 @@ def get_results():
 
 
 
-def send_email_notification(available_courts):
-    """예약 가능한 코트가 있을 때 이메일 전송"""
+def send_telegram_notification(available_courts):
+    """예약 가능한 코트가 있을 때 텔레그램 메시지 전송"""
     try:
-        print(f"\n📧 이메일 전송 시작 - {len(available_courts)}개 코트")
+        print(f"\n� 텔레그램 알림 전송 시작 - {len(available_courts)}개 코트")
         
-        # 이메일 설정
-        sender_email = os.environ.get("EMAIL_SENDER", "your_email@gmail.com")
-        sender_password = os.environ.get("EMAIL_PASSWORD", "your_app_password")
-        receiver_emails_str = os.environ.get("EMAIL_RECEIVER", "your_email@gmail.com")
-        smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-        smtp_port = int(os.environ.get("SMTP_PORT", "587"))  # TLS 포트로 변경
+        # 텔레그램 설정
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
         
-        # 수신자 이메일을 쉼표로 구분하여 리스트로 변환
-        receiver_emails = [email.strip() for email in receiver_emails_str.split(',')]
+        print(f"📱 봇 토큰: {bot_token[:20] if bot_token else '없음'}...")
+        print(f"� 채팅 ID: {chat_id}")
         
-        print(f"📧 발신자: {sender_email}")
-        print(f"📧 수신자: {receiver_emails}")
-        print(f"📧 SMTP 서버: {smtp_server}:{smtp_port}")
-        
-        if not sender_email or not sender_password:
-            print("⚠️ 이메일 설정이 없습니다. EMAIL_SENDER, EMAIL_PASSWORD 환경변수를 설정해주세요.")
+        if not bot_token or not chat_id:
+            print("⚠️ 텔레그램 설정이 없습니다. telegram_config.txt 파일을 확인해주세요.")
             return
         
-        if sender_email == "your_email@gmail.com" or sender_password == "your_app_password":
-            print("⚠️ 기본값이 설정되어 있습니다. 실제 이메일과 앱 비밀번호로 변경해주세요.")
+        if bot_token == "your_bot_token_here" or chat_id == "your_chat_id_here":
+            print("⚠️ 기본값이 설정되어 있습니다. telegram_config.txt에서 실제 값으로 변경해주세요.")
             return
         
-        # 이메일 제목에 예약 가능한 날짜, 코트, 시간 정보 추가
-        if available_courts:
-            # 날짜별로 그룹화
-            dates = list(set(court['date'] for court in available_courts))
-            dates.sort()
-            
-            # 코트+시간 정보 추출 (시설명+코트번호+시간)
-            court_info = []
-            for court in available_courts:
-                court_name = f"{court['facility_name']} {court['court']}({court['time']})"
-                if court_name not in court_info:
-                    court_info.append(court_name)
-            
-            # 제목 길이 제한 (이메일 제목은 보통 60자 이내 권장)
-            if len(dates) == 1:
-                date_str = dates[0]
-            else:
-                date_str = f"{dates[0]}~{dates[-1]}"
-            
-            if len(court_info) <= 3:
-                court_str = ", ".join(court_info)
-            else:
-                court_str = f"{court_info[0]} 외 {len(court_info)-1}개"
-            
-            subject = f"🎾 테니스 코트 예약 가능 - {date_str} {court_str}"
-        else:
-            subject = "🎾 테니스 코트 예약 가능 알림"
-        
-        # HTML 형식의 이메일 내용
-        html_content = """
-        <html>
-        <head>
-            <style>
-                body { font-family: Arial, sans-serif; }
-                .court-item { 
-                    background-color: #e8f5e9; 
-                    padding: 10px; 
-                    margin: 5px 0; 
-                    border-radius: 5px;
-                    border-left: 5px solid #4CAF50;
-                }
-                .header { color: #4CAF50; font-weight: bold; }
-            </style>
-        </head>
-        <body>
-            <h2 class=\"header\">🎾 예약 가능한 테니스 코트가 있습니다!</h2>
-            <p>다음 코트들이 예약 가능합니다:</p>
-        """
+        # 메시지 내용 생성 (Markdown 형식)
+        message = "🎾 *예약 가능한 테니스 코트 발견\!*\n\n"
         
         # 날짜별로 그룹화
         by_date = {}
@@ -1460,7 +1407,9 @@ def send_email_notification(available_courts):
         
         # 날짜별로 정렬하여 출력
         for date in sorted(by_date.keys()):
-            html_content += f"<h3>📅 {date}</h3>"
+            # 날짜를 이스케이프 처리 (Markdown V2 형식)
+            escaped_date = date.replace('-', '\\-').replace('.', '\\.')
+            message += f"📅 *{escaped_date}*\n"
             
             # 시설별로 그룹화
             by_facility = {}
@@ -1472,148 +1421,50 @@ def send_email_notification(available_courts):
             
             # 시설별로 정렬하여 출력
             for facility in sorted(by_facility.keys()):
-                html_content += f"<h4>🏟️ {facility}</h4>"
+                # 시설명을 이스케이프 처리
+                escaped_facility = facility.replace('-', '\\-').replace('.', '\\.').replace('(', '\\(').replace(')', '\\)')
+                message += f"🏟️ _{escaped_facility}_\n"
                 for court in sorted(by_facility[facility], key=lambda x: x['time']):
-                    html_content += f"""
-                    <div class=\"court-item\">
-                        <strong>{court['court']}</strong> - {court['time']}
-                    </div>
-                    """
+                    # 코트 정보를 이스케이프 처리
+                    escaped_court = court['court'].replace('-', '\\-').replace('.', '\\.').replace('(', '\\(').replace(')', '\\)')
+                    escaped_time = court['time'].replace('-', '\\-').replace('.', '\\.').replace(':', '\\:').replace('~', '\\~')
+                    message += f"  • {escaped_court} \\- {escaped_time}\n"
+            message += "\n"
         
-        html_content += """
-            <br>
-            <p><a href=\"https://res.isdc.co.kr/\" target=\"_blank\"><strong>예약하러가기</strong></a></p>
-            <p><small>이 메일은 자동으로 발송되었습니다.</small></p>
-        </body>
-        </html>
-        """
+        message += "[예약하러 가기](https://res\\.isdc\\.co\\.kr/)\n\n"
+        message += "_이 메시지는 자동으로 발송되었습니다\\._"
         
-        print("📧 이메일 내용 생성 완료")
+        print("� 메시지 내용 생성 완료")
         
-        print(f"📧 SMTP 서버 연결 시도... ({smtp_server}:{smtp_port})")
+        # 텔레그램 API 호출
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            'chat_id': chat_id,
+            'text': message,
+            'parse_mode': 'MarkdownV2',
+            'disable_web_page_preview': False
+        }
         
-        # SMTP 연결 시도 (TLS 방식 우선, 실패 시 SSL 방식 시도)
-        smtp_success = False
-        server = None
+        print(f"� 텔레그램 API 호출 중...")
+        response = requests.post(url, json=payload, timeout=10, verify=False)
         
-        # 방법 1: STARTTLS 방식 (포트 587)
-        if smtp_port == 587:
-            try:
-                print("📧 STARTTLS 방식으로 연결 시도...")
-                server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
-                server.set_debuglevel(0)
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                print("📧 SMTP 서버 연결 성공 (STARTTLS)")
-                smtp_success = True
-            except Exception as e:
-                print(f"⚠️ STARTTLS 연결 실패: {e}")
-                if server:
-                    try:
-                        server.quit()
-                    except:
-                        pass
-                server = None
-        
-        # 방법 2: SSL 방식 (포트 465)
-        if not smtp_success and smtp_port == 465:
-            try:
-                print("📧 SSL 방식으로 연결 시도...")
-                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
-                server.set_debuglevel(0)
-                server.ehlo()
-                print("📧 SMTP 서버 연결 성공 (SSL)")
-                smtp_success = True
-            except Exception as e:
-                print(f"⚠️ SSL 연결 실패: {e}")
-                if server:
-                    try:
-                        server.quit()
-                    except:
-                        pass
-                server = None
-        
-        # SMTP 연결 실패 시 대체 포트로 재시도
-        if not smtp_success:
-            print("📧 대체 연결 방법 시도...")
-            for alt_port, use_tls in [(587, True), (465, False), (25, True)]:
-                try:
-                    print(f"📧 포트 {alt_port} 시도...")
-                    if use_tls:
-                        server = smtplib.SMTP(smtp_server, alt_port, timeout=30)
-                        server.set_debuglevel(0)
-                        server.ehlo()
-                        server.starttls()
-                        server.ehlo()
-                    else:
-                        server = smtplib.SMTP_SSL(smtp_server, alt_port, timeout=30)
-                        server.set_debuglevel(0)
-                        server.ehlo()
-                    print(f"📧 SMTP 서버 연결 성공 (포트 {alt_port})")
-                    smtp_success = True
-                    break
-                except Exception as e:
-                    print(f"⚠️ 포트 {alt_port} 연결 실패: {e}")
-                    if server:
-                        try:
-                            server.quit()
-                        except:
-                            pass
-                    server = None
-                    continue
-        
-        if not smtp_success or server is None:
-            print("❌ 모든 SMTP 연결 방법 실패")
-            print("💡 해결 방법:")
-            print("   1. 네트워크 연결 확인")
-            print("   2. 방화벽 설정 확인 (포트 587, 465 허용)")
-            print("   3. SMTP 서버 주소 확인")
-            print("   4. Gmail의 경우 '앱 비밀번호' 사용 필요")
-            return
-        
-        try:
-            print("📧 로그인 시도...")
-            server.login(sender_email, sender_password)
-            print("📧 로그인 성공")
-            
-            # 모든 수신자에게 이메일 전송
-            for receiver_email in receiver_emails:
-                try:
-                    # 이메일 메시지 생성
-                    msg = MIMEMultipart('alternative')
-                    msg['From'] = sender_email
-                    msg['To'] = receiver_email
-                    msg['Subject'] = subject
-                    
-                    # HTML 내용 추가
-                    html_part = MIMEText(html_content, 'html', 'utf-8')
-                    msg.attach(html_part)
-                    
-                    print(f"📧 이메일 전송 중: {receiver_email}")
-                    server.send_message(msg)
-                    print(f"✅ 이메일 전송 완료: {receiver_email}")
-                    
-                except Exception as e:
-                    print(f"❌ 이메일 전송 실패 ({receiver_email}): {e}")
-            
-            print(f"✅ 모든 수신자에게 이메일 전송 완료: {len(receiver_emails)}명")
-        
-        finally:
-            if server:
-                try:
-                    server.quit()
-                    print("📧 SMTP 연결 종료")
-                except:
-                    pass
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                print(f"✅ 텔레그램 알림 전송 완료")
+            else:
+                print(f"❌ 텔레그램 API 오류: {result.get('description', '알 수 없는 오류')}")
+        else:
+            print(f"❌ 텔레그램 API 호출 실패: HTTP {response.status_code}")
+            print(f"   응답: {response.text}")
         
     except Exception as e:
-        print(f"❌ 이메일 전송 실패: {e}")
+        print(f"❌ 텔레그램 알림 전송 실패: {e}")
         import traceback
         traceback.print_exc()
 
-def check_and_send_email(available_results):
-    """예약 가능한 코트를 확인하고 이메일 전송 (부분 실패 상황에도 대응)"""
+def check_and_send_notification(available_results):
+    """예약 가능한 코트를 확인하고 텔레그램 알림 전송 (부분 실패 상황에도 대응)"""
     try:
         print(f"\n🔍 예약 가능 알림 확인 시작 - 전체 예약 가능 코트 수: {len(available_results)}")
         
@@ -1628,7 +1479,7 @@ def check_and_send_email(available_results):
         
         # 12:00 AM (0시) ~ 07:01 AM (7시 1분) 사이인지 확인
         if 0 <= current_hour < 7 or (current_hour == 7 and current_time.minute == 0):
-            print(f"⏰ 현재 시간: {current_time.strftime('%H:%M')} - 12:00 AM ~ 07:01 AM 시간대이므로 이메일 전송을 건너뜁니다.")
+            print(f"⏰ 현재 시간: {current_time.strftime('%H:%M')} - 12:00 AM ~ 07:01 AM 시간대이므로 알림 전송을 건너뜁니다.")
             return
         
         # 탄천실내, 수내, 야탑에서 예약 가능한 코트 필터링
@@ -1650,47 +1501,47 @@ def check_and_send_email(available_results):
             for court in sorted(target_courts, key=lambda x: (x['date'], x['facility_name'], x['court'], x['time'])):
                 current_courts_key += f"{court['facility_name']}_{court['court']}_{court['date']}_{court['time']}|"
             
-            email_key = current_time.strftime('%Y-%m-%d')
+            notification_key = current_time.strftime('%Y-%m-%d')
             
-            print(f"📅 현재 날짜 키: {email_key}")
-            print(f"📧 마지막 이메일 전송 기록: {last_email_sent}")
-            print(f"📧 이전 예약 가능 코트 정보: {last_available_courts.get(email_key, '없음')}")
-            print(f"📧 현재 예약 가능 코트 정보: {current_courts_key}")
+            print(f"📅 현재 날짜 키: {notification_key}")
+            print(f"� 마지막 알림 전송 기록: {last_email_sent}")
+            print(f"� 이전 예약 가능 코트 정보: {last_available_courts.get(notification_key, '없음')}")
+            print(f"� 현재 예약 가능 코트 정보: {current_courts_key}")
             
             # 새로운 날짜인 경우
-            if email_key not in last_email_sent:
-                print("📧 새로운 날짜 - 이메일 전송 시작")
+            if notification_key not in last_email_sent:
+                print("� 새로운 날짜 - 알림 전송 시작")
                 try:
-                    send_email_notification(target_courts)
-                    last_email_sent[email_key] = current_time - 3600  # 1시간 전으로 설정하여 즉시 재전송 가능
-                    last_available_courts[email_key] = current_courts_key
-                    print(f"✅ 이메일 알림 전송 완료: {len(target_courts)}개 코트")
+                    send_telegram_notification(target_courts)
+                    last_email_sent[notification_key] = current_time - timedelta(seconds=3600)  # 1시간 전으로 설정하여 즉시 재전송 가능
+                    last_available_courts[notification_key] = current_courts_key
+                    print(f"✅ 알림 전송 완료: {len(target_courts)}개 코트")
                 except Exception as e:
-                    print(f"❌ 이메일 전송 실패: {e}")
-                    # 이메일 전송 실패해도 프로그램은 계속 실행
+                    print(f"❌ 알림 전송 실패: {e}")
+                    # 알림 전송 실패해도 프로그램은 계속 실행
             else:
-                # 같은 날에 이미 이메일을 보냈으면 1시간 후에 다시 보낼 수 있도록
-                time_diff = current_time - last_email_sent[email_key]
+                # 같은 날에 이미 알림을 보냈으면 1시간 후에 다시 보낼 수 있도록
+                time_diff = current_time - last_email_sent[notification_key]
                 print(f"⏰ 마지막 전송으로부터 경과 시간: {time_diff.total_seconds()}초")
                 
                 if time_diff.total_seconds() > 3600:  # 1시간
                     # 이전 예약 가능한 코트 정보와 현재 정보 비교
-                    previous_courts_key = last_available_courts.get(email_key, "")
+                    previous_courts_key = last_available_courts.get(notification_key, "")
                     
                     if current_courts_key != previous_courts_key:
-                        print("📧 1시간 경과 + 내용 변동 - 이메일 재전송 시작")
+                        print("� 1시간 경과 + 내용 변동 - 알림 재전송 시작")
                         try:
-                            send_email_notification(target_courts)
-                            last_email_sent[email_key] = current_time
-                            last_available_courts[email_key] = current_courts_key
-                            print(f"✅ 이메일 알림 재전송 완료: {len(target_courts)}개 코트")
+                            send_telegram_notification(target_courts)
+                            last_email_sent[notification_key] = current_time
+                            last_available_courts[notification_key] = current_courts_key
+                            print(f"✅ 알림 재전송 완료: {len(target_courts)}개 코트")
                         except Exception as e:
-                            print(f"❌ 이메일 재전송 실패: {e}")
-                            # 이메일 전송 실패해도 프로그램은 계속 실행
+                            print(f"❌ 알림 재전송 실패: {e}")
+                            # 알림 전송 실패해도 프로그램은 계속 실행
                     else:
-                        print("⏳ 1시간 경과했지만 내용 변동 없음 - 이메일 전송 건너뜀")
+                        print("⏳ 1시간 경과했지만 내용 변동 없음 - 알림 전송 건너뜀")
                 else:
-                    print("⏳ 1시간 미경과 - 이메일 전송 건너뜀")
+                    print("⏳ 1시간 미경과 - 알림 전송 건너뜀")
         else:
             print("❌ 타겟 시설에서 예약 가능한 코트가 없습니다.")
         
@@ -1728,6 +1579,34 @@ def load_email_config():
                                 print(f"✅ {key} 설정됨: {value}")
         except Exception as e:
             print(f"❌ email_config.txt 파일 읽기 오류: {e}")
+
+def load_telegram_config():
+    """telegram_config.txt 파일에서 텔레그램 설정을 로드하여 환경 변수에 설정"""
+    telegram_config_file = "telegram_config.txt"
+    if os.path.exists(telegram_config_file):
+        try:
+            with open(telegram_config_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # 주석과 빈 줄 건너뛰기
+                    if not line or line.startswith('#'):
+                        continue
+                    # KEY=VALUE 형식 파싱
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        # 기본값이 아닌 경우에만 환경 변수 설정
+                        if value and value not in ['your_bot_token_here', 'your_chat_id_here']:
+                            os.environ[key] = value
+                            if key == 'TELEGRAM_BOT_TOKEN':
+                                print(f"✅ {key} 설정됨: {value[:20]}...")
+                            else:
+                                print(f"✅ {key} 설정됨: {value}")
+        except Exception as e:
+            print(f"❌ telegram_config.txt 파일 읽기 오류: {e}")
+    else:
+        print("⚠️ telegram_config.txt 파일이 없습니다. 텔레그램 알림을 사용하려면 파일을 생성해주세요.")
 
 def load_accounts():
     """계정 정보를 로드하는 함수"""
@@ -1789,8 +1668,11 @@ def load_accounts():
 
 def main():
     try:
-        # 이메일 설정 로드
+        # 이메일 설정 로드 (호환성 유지)
         load_email_config()
+        
+        # 텔레그램 설정 로드
+        load_telegram_config()
         
         # 다중 계정 정보 로드
         accounts = load_accounts()
@@ -1845,14 +1727,14 @@ def main():
                 global monitoring_results
                 monitoring_results = results
                 
-                # 이메일 알림 확인 및 전송 (부분 실패 상황에서도 성공한 데이터가 있으면 전송)
+                # 알림 확인 및 전송 (부분 실패 상황에서도 성공한 데이터가 있으면 전송)
                 try:
-                    check_and_send_email(results)
+                    check_and_send_notification(results)
                 except Exception as e:
-                    print(f"❌ 이메일 확인/전송 중 오류: {e}")
+                    print(f"❌ 알림 확인/전송 중 오류: {e}")
                     import traceback
                     traceback.print_exc()
-                    # 이메일 전송 실패해도 모니터링은 계속
+                    # 알림 전송 실패해도 모니터링은 계속
                 
                 # 5번 모니터링마다 계정 순환 (약 5분마다)
                 monitoring_count += 1
