@@ -1513,7 +1513,7 @@ def check_and_send_notification(available_results):
                 print("� 새로운 날짜 - 알림 전송 시작")
                 try:
                     send_telegram_notification(target_courts)
-                    last_email_sent[notification_key] = current_time - timedelta(seconds=3600)  # 1시간 전으로 설정하여 즉시 재전송 가능
+                    last_email_sent[notification_key] = current_time - timedelta(seconds=1800)  # 30분 전으로 설정하여 즉시 재전송 가능
                     last_available_courts[notification_key] = current_courts_key
                     print(f"✅ 알림 전송 완료: {len(target_courts)}개 코트")
                 except Exception as e:
@@ -1523,8 +1523,8 @@ def check_and_send_notification(available_results):
                 # 같은 날에 이미 알림을 보냈으면 1시간 후에 다시 보낼 수 있도록
                 time_diff = current_time - last_email_sent[notification_key]
                 print(f"⏰ 마지막 전송으로부터 경과 시간: {time_diff.total_seconds()}초")
-                
-                if time_diff.total_seconds() > 3600:  # 1시간
+
+                if time_diff.total_seconds() > 1800:  # 30분
                     # 이전 예약 가능한 코트 정보와 현재 정보 비교
                     previous_courts_key = last_available_courts.get(notification_key, "")
                     
