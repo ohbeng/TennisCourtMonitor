@@ -428,6 +428,7 @@ class TennisCourtScheduler:
                 date = datetime.now(KST) + timedelta(days=i)
                 date_str = date.strftime('%Y-%m-%d')
                 
+                time.sleep(0.5) # 요청 간 잠시 대기
                 print(f"\n📅 {date_str} 모니터링 중...")
                 
                 # 각 시설별 모니터링
@@ -436,6 +437,7 @@ class TennisCourtScheduler:
                     facility_name = facility['name']
                     time_slots = facility['times']
                     
+                    time.sleep(0.5) # 요청 간 잠시 대기
                     print(f"\n🏟️  {facility_name} ({facility_id}) 모니터링")
                     total_requests += 1
                     
