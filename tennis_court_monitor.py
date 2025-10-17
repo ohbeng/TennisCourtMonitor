@@ -64,13 +64,13 @@ class TennisCourtScheduler:
         """일주일이 지난 파일들을 삭제"""
         try:
             current_time = time.time()
-            one_week_ago = current_time - (7 * 24 * 60 * 60)  # 7일을 초로 변환
+            one_day_ago = current_time - (1 * 24 * 60 * 60)  # 1일을 초로 변환
             
             for filename in os.listdir(self.log_dir):
                 filepath = os.path.join(self.log_dir, filename)
                 if os.path.isfile(filepath):
                     file_time = os.path.getmtime(filepath)
-                    if file_time < one_week_ago:
+                    if file_time < one_day_ago:
                         os.remove(filepath)
                         print(f"🗑️ 오래된 파일 삭제: {filename}")
         except Exception as e:
@@ -256,7 +256,7 @@ class TennisCourtScheduler:
         print("❌ 모든 계정에서 로그인 실패")
         return False
     
-    def get_timetable_with_retry(self, facility_id, date_str, max_retries=1):
+    def get_timetable_with_retry(self, facility_id, date_str, max_retries=2):
         """타임테이블 조회 (세션 만료 시 재로그인 처리)"""
         for attempt in range(max_retries):
             timetable_html = self.get_timetable(facility_id, date_str)
