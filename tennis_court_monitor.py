@@ -29,8 +29,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 app = Flask(__name__)
 scheduler = None
 monitoring_results = []
+all_courts_cache = []  # 전체 코트 정보 캐시
+last_update_time = None  # 마지막 업데이트 시간
 last_email_sent = {}  # 이메일 전송 기록을 저장
 last_available_courts = {}  # 이전 예약 가능한 코트 정보를 저장
+cache_lock = threading.Lock()  # 캐시 접근 동기화를 위한 Lock
 
 KST = timezone(timedelta(hours=9))
 
@@ -349,7 +352,8 @@ class TennisCourtScheduler:
             all_slots = []
             
             # 코트별로 분리 (label 태그와 tableBox 클래스를 사용)
-            court_sections = re.findall(r'<label class=\'tit required lb-timetable\'>.*?(\d+)번 코트.*?</label>.*?<div class=\'tableBox mgb30\'.*?<tbody>(.*?)</tbody>', html_content, re.DOTALL)
+            # 패턴: "1번 코트", "1번코트", "(일요일)1번 코트" 등 모두 매칭
+            court_sections = re.findall(r'<label class=\'tit required lb-timetable\'>.*?(\d+)번\s*코트.*?</label>.*?<div class=\'tableBox mgb30\'.*?<tbody>(.*?)</tbody>', html_content, re.DOTALL)
             
             for court_num, court_content in court_sections:
                 # "이용가능한 시간이 없습니다" 체크
@@ -428,7 +432,7 @@ class TennisCourtScheduler:
                 date = datetime.now(KST) + timedelta(days=i)
                 date_str = date.strftime('%Y-%m-%d')
                 
-                time.sleep(0.5) # 요청 간 잠시 대기
+                time.sleep(0.1) # 요청 간 잠시 대기
                 print(f"\n📅 {date_str} 모니터링 중...")
                 
                 # 각 시설별 모니터링
@@ -437,18 +441,31 @@ class TennisCourtScheduler:
                     facility_name = facility['name']
                     time_slots = facility['times']
                     
-                    time.sleep(0.5) # 요청 간 잠시 대기
+                    time.sleep(0.1) # 요청 간 잠시 대기
                     print(f"\n🏟️  {facility_name} ({facility_id}) 모니터링")
                     total_requests += 1
                     
                     try:
                         # 타임테이블 조회 시 세션 만료 체크 및 재로그인 처리
                         timetable_html = self.get_timetable_with_retry(facility_id, date_str)
+                        
+                        # HTML이 없으면 저장된 로그 파일에서 읽기 시도
+                        if not timetable_html:
+                            log_file = f"log/timetable_raw_{facility_id}_{date_str}.html"
+                            if os.path.exists(log_file):
+                                print(f"📂 로그 파일에서 데이터 로드 시도: {log_file}")
+                                try:
+                                    with open(log_file, 'r', encoding='utf-8') as f:
+                                        timetable_html = f.read()
+                                    print(f"✅ 로그 파일에서 데이터 로드 성공")
+                                except Exception as e:
+                                    print(f"⚠️  로그 파일 읽기 실패: {e}")
+                        
                         if timetable_html:
                             # 예약 가능한 시간대 파싱
                             available_slots, all_slots = self.parse_timetable(timetable_html, facility_id, date_str)
                             
-                            # 모든 코트 정보 저장
+                            # 모든 코트 정보 저장 (중복 방지를 위해 고유 키 생성)
                             for slot in all_slots:
                                 court_info = {
                                     'date': date_str,
@@ -459,6 +476,7 @@ class TennisCourtScheduler:
                                     'is_available': slot['is_available'],
                                     'reservation_name': slot['reservation_name']
                                 }
+                                # 중복 방지: 고유 키로 체크하지 않고 무조건 추가 (리스트에 모든 데이터 포함)
                                 all_courts.append(court_info)
                             
                             # 모니터링 설정된 시간대와 비교
@@ -478,7 +496,7 @@ class TennisCourtScheduler:
                             print(f"✅ {facility_name} 조회 성공 - 예약 가능: {len(available_slots)}개, 전체: {len(all_slots)}개")
                         else:
                             failed_requests += 1
-                            print(f"⚠️  {facility_name} 타임테이블 조회 실패 - 건너뛰고 계속 진행")
+                            print(f"⚠️  {facility_name} 타임테이블 조회 및 로그 로드 실패 - 건너뛰고 계속 진행")
                             # 실패해도 계속 진행
                             continue
                             
@@ -875,38 +893,68 @@ def create_html_template():
                 return;
             }
 
+            // 시설별/날짜별 그룹화
+            const groupedData = {};
+            data.all_courts.forEach(court => {
+                const key = `${court.facility_name}_${court.date}`;
+                if (!groupedData[key]) {
+                    groupedData[key] = {
+                        facility_name: court.facility_name,
+                        date: court.date,
+                        courts: []
+                    };
+                }
+                groupedData[key].courts.push(court);
+            });
+
             let html = '<div class="table-responsive"><table class="table table-bordered status-table">';
             
             // 테이블 헤더
             html += '<thead><tr>';
-            html += '<th>날짜</th>';
             html += '<th>시설</th>';
-            html += '<th>코트</th>';
-            html += '<th>시간</th>';
-            html += '<th>상태</th>';
+            html += '<th>날짜</th>';
+            html += '<th>전체 코트 수</th>';
+            html += '<th>예약 가능</th>';
+            html += '<th>예약 불가</th>';
             html += '</tr></thead><tbody>';
 
+            // 시설명과 날짜로 정렬
+            const sortedKeys = Object.keys(groupedData).sort((a, b) => {
+                const [facilityA, dateA] = a.split('_');
+                const [facilityB, dateB] = b.split('_');
+                if (facilityA !== facilityB) return facilityA.localeCompare(facilityB);
+                return dateA.localeCompare(dateB);
+            });
+
             // 테이블 내용
-            data.all_courts.forEach(court => {
-                const isAvailable = data.results.some(r => 
-                    r.date === court.date && 
-                    r.facility_name === court.facility_name && 
-                    r.court === court.court && 
-                    r.time === court.time
-                );
+            sortedKeys.forEach(key => {
+                const group = groupedData[key];
+                const totalCourts = group.courts.length;
+                const availableCourts = group.courts.filter(court => {
+                    return data.results.some(r => 
+                        r.date === court.date && 
+                        r.facility_name === court.facility_name && 
+                        r.court === court.court && 
+                        r.time === court.time
+                    );
+                }).length;
+                const unavailableCourts = totalCourts - availableCourts;
 
                 html += `<tr>
-                    <td>${court.date}</td>
-                    <td>${court.facility_name}</td>
-                    <td>${court.court}</td>
-                    <td>${court.time}</td>
-                    <td class="${isAvailable ? 'available' : 'unavailable'}">
-                        ${isAvailable ? '예약 가능한 코트' : '예약 불가'}
-                    </td>
+                    <td>${group.facility_name}</td>
+                    <td>${group.date}</td>
+                    <td>${totalCourts}</td>
+                    <td class="status-available">${availableCourts}</td>
+                    <td>${unavailableCourts}</td>
                 </tr>`;
             });
 
             html += '</tbody></table></div>';
+            
+            // 전체 통계
+            const totalAllCourts = data.all_courts.length;
+            html += `<div class="last-update">전체 코트 수: ${totalAllCourts}개</div>`;
+            
             tableDiv.innerHTML = html;
         }
 
@@ -1337,27 +1385,31 @@ def index():
 
 @app.route('/get_results')
 def get_results():
-    """현재 모니터링 결과 반환"""
-    global monitoring_results, scheduler
+    """현재 모니터링 결과 반환 (캐시된 데이터 사용)"""
+    global monitoring_results, all_courts_cache, last_update_time, cache_lock
     
     try:
-        available_results, all_courts = scheduler.monitor_courts()
+        # 스레드 안전하게 캐시 읽기
+        with cache_lock:
+            # 캐시 데이터 복사 (Lock 내에서 빠르게 복사)
+            import copy
+            results_copy = copy.deepcopy(monitoring_results)
+            all_courts_copy = copy.deepcopy(all_courts_cache)
+            last_update_copy = last_update_time
         
-        print(f"\n📊 API 응답 - 예약 가능한 코트 수: {len(available_results)}")
-        print(f"📊 API 응답 - 전체 코트 수: {len(all_courts)}")
-        
-        # 결과를 날짜, 시설, 코트, 시간 순으로 정렬
-        if all_courts:
-            all_courts.sort(key=lambda x: (x['date'], x['facility_name'], x['court'], x['time']))
-        
+        # 캐시된 데이터 반환
         response_data = {
-            'results': available_results,
-            'all_courts': all_courts,
-            'last_update': datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'),
-            'status': 'success' if (available_results or all_courts) else 'no_data'
+            'results': results_copy,
+            'all_courts': all_courts_copy,
+            'last_update': last_update_copy.strftime('%Y-%m-%d %H:%M:%S') if last_update_copy else datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S'),
+            'status': 'success' if (results_copy or all_courts_copy) else 'no_data'
         }
         
-        return jsonify(response_data)
+        # ensure_ascii=False로 한글 인코딩 문제 방지
+        import json
+        from flask import Response
+        json_str = json.dumps(response_data, ensure_ascii=False, indent=2)
+        return Response(json_str, mimetype='application/json; charset=utf-8')
         
     except Exception as e:
         print(f"❌ API 요청 처리 중 오류: {e}")
@@ -1723,11 +1775,24 @@ def main():
                 # 모니터링 실행
                 results, all_courts = scheduler.monitor_courts()
                 
-                # 결과 업데이트
-                global monitoring_results
-                monitoring_results = results
+                # 결과 업데이트 (전역 캐시에 병합)
+                global monitoring_results, all_courts_cache, last_update_time, cache_lock
                 
-                # 알림 확인 및 전송 (부분 실패 상황에서도 성공한 데이터가 있으면 전송)
+                # 스레드 안전하게 캐시 업데이트
+                with cache_lock:
+                    # 예약 가능한 코트는 항상 최신 데이터로 교체
+                    monitoring_results = results
+                    
+                
+                # 전체 코트 캐시 업데이트: 이번 사이클에서 조회한 데이터로 완전 교체
+                # (캐시 병합 제거 - 매 사이클마다 모든 4일치를 조회하므로 병합 불필요)
+                if all_courts:
+                    all_courts_cache = all_courts[:]
+                else:
+                    # 새 데이터가 없으면 기존 캐시 유지
+                    print(f"\n💾 새 데이터 없음 - 기존 캐시 유지: {len(all_courts_cache)}개")
+                
+                last_update_time = datetime.now(KST)                # 알림 확인 및 전송 (부분 실패 상황에서도 성공한 데이터가 있으면 전송)
                 try:
                     check_and_send_notification(results)
                 except Exception as e:
@@ -1743,14 +1808,14 @@ def main():
                     scheduler.switch_to_next_account()
                 
                 # 1분 대기
-                print(f"\n⏰ 다음 모니터링까지 60초 대기...")
-                time.sleep(60)
+                print(f"\n⏰ 다음 모니터링까지 90초 대기...")
+                time.sleep(90)
                 
             except Exception as e:
                 print(f"❌ 모니터링 루프 중 오류 발생: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(60)  # 오류 발생 시 1분 대기
+                time.sleep(90)  # 오류 발생 시 90초 대기
         
     except Exception as e:
         print(f"❌ 프로그램 실행 중 오류 발생: {e}")
