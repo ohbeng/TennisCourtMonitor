@@ -295,26 +295,42 @@ class TennisCourtScheduler:
     def get_timetable(self, facility_id, date_str):
         """타임테이블 조회"""
         try:
-            # 타임테이블 URL
-            url = f"{self.base_url}/reservationInfo.do"
+            # 타임테이블 URL (POST 방식으로 변경)
+            url = f"{self.base_url}/otherTimetable.do"
             
             # 날짜 형식 변환 (YYYY-MM-DD -> YYYY-M-D)
             date_parts = date_str.split('-')
             formatted_date = f"{date_parts[0]}-{int(date_parts[1])}-{int(date_parts[2])}"
             
-            # 요청 파라미터
-            params = {
+            # 요청 파라미터 (POST body)
+            data = {
                 'facId': facility_id,
                 'resdate': formatted_date
             }
             
-            # 디버깅을 위한 URL과 파라미터 출력
-            print(f"\n🔍 타임테이블 요청:")
-            print(f"URL: {url}")
-            print(f"파라미터: {params}")
+            # POST 요청에 필요한 헤더 설정
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Origin': self.base_url,
+                'Referer': f'{self.base_url}/reservationInfo.do',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Dest': 'document',
+                'Upgrade-Insecure-Requests': '1',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+                'Cache-Control': 'max-age=0'
+            }
             
-            # 타임테이블 조회
-            response = self.session.get(url, params=params, verify=False)
+            # 디버깅을 위한 URL과 파라미터 출력
+            print(f"\n🔍 타임테이블 요청 (POST):")
+            print(f"URL: {url}")
+            print(f"Data: {data}")
+            
+            # 타임테이블 조회 (POST 방식)
+            response = self.session.post(url, data=data, headers=headers, verify=False)
             
             # 응답 상태 확인
             if response.status_code == 200:
