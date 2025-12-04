@@ -296,7 +296,7 @@ class TennisCourtScheduler:
         """타임테이블 조회"""
         try:
             # 타임테이블 URL
-            url = f"{self.base_url}/otherTimetable.do"
+            url = f"{self.base_url}/reservationInfo.do"
             
             # 날짜 형식 변환 (YYYY-MM-DD -> YYYY-M-D)
             date_parts = date_str.split('-')
