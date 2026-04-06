@@ -6,6 +6,14 @@ MonitoringTable.txt에 정의된 시설과 시간대를 기반으로
 오늘부터 3일 후까지 예약 가능한 코트를 확인합니다.
 """
 
+import sys
+import io
+
+# Windows 터미널 UTF-8 인코딩 설정 (이모지 출력 지원)
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import requests
 from bs4 import BeautifulSoup
 import os
@@ -149,6 +157,7 @@ class TennisCourtScheduler:
                     content = f.read().strip()
                 
                 current_facility = None
+                current_section = 'weekday'  # 기본값: 주중
                 for line in content.split('\n'):
                     line = line.strip()
                     if not line or line.startswith('//'):
@@ -161,19 +170,35 @@ class TennisCourtScheduler:
                             facility_id = match.group(1)
                             facility_name = match.group(2)
                             current_facility = facility_id
+                            current_section = 'weekday'
                             self.facilities.append({
                                 'id': facility_id,
                                 'name': facility_name,
-                                'times': []
+                                'weekday_times': [],
+                                'weekend_times': []
                             })
-                    # 시간 정보 파싱
-                    elif current_facility and ':' in line and '~' in line:
+                    # 주중/주말 섹션 구분
+                    elif line == '주중':
+                        current_section = 'weekday'
+                    elif line == '주말':
+                        current_section = 'weekend'
+                    # All 키워드: 해당 구간의 모든 시간대 모니터링
+                    elif current_facility and line.lower() == 'all':
+                        if current_section == 'weekday':
+                            self.facilities[-1]['weekday_times'] = ['ALL']
+                        else:
+                            self.facilities[-1]['weekend_times'] = ['ALL']
+                    # 시간 정보 파싱 (#으로 시작하는 비활성 시간대 제외)
+                    elif current_facility and ':' in line and '~' in line and not line.startswith('#'):
                         time_slot = line.strip()
-                        self.facilities[-1]['times'].append(time_slot)
+                        if current_section == 'weekday':
+                            self.facilities[-1]['weekday_times'].append(time_slot)
+                        else:
+                            self.facilities[-1]['weekend_times'].append(time_slot)
                 
                 print(f"✅ 모니터링 설정 로드 완료: {len(self.facilities)}개 시설")
                 for fac in self.facilities:
-                    print(f"   - {fac['id']}({fac['name']}): {len(fac['times'])}개 시간대")
+                    print(f"   - {fac['id']}({fac['name']}): 주중 {len(fac['weekday_times'])}개, 주말 {len(fac['weekend_times'])}개 시간대")
             else:
                 print(f"❌ 모니터링 설정 파일 '{self.monitoring_file}'이 존재하지 않습니다.")
         except Exception as e:
@@ -455,7 +480,11 @@ class TennisCourtScheduler:
                 for facility in self.facilities:
                     facility_id = facility['id']
                     facility_name = facility['name']
-                    time_slots = facility['times']
+                    # 날짜가 주말(토=5, 일=6)이면 주말 시간대, 아니면 주중 시간대 사용
+                    if date.weekday() >= 5:
+                        time_slots = facility['weekend_times']
+                    else:
+                        time_slots = facility['weekday_times']
                     
                     time.sleep(0.1) # 요청 간 잠시 대기
                     print(f"\n🏟️  {facility_name} ({facility_id}) 모니터링")
@@ -498,15 +527,24 @@ class TennisCourtScheduler:
                             # 모니터링 설정된 시간대와 비교
                             for slot in available_slots:
                                 slot_time = slot['time']
-                                for target_time in time_slots:
-                                    if self.time_ranges_match(slot_time, target_time):
-                                        all_available.append({
-                                            'facility_name': facility_name,
-                                            'facility_id': facility_id,
-                                            'date': date_str,
-                                            'time': slot_time,
-                                            'court': slot['court']
-                                        })
+                                if 'ALL' in time_slots:
+                                    all_available.append({
+                                        'facility_name': facility_name,
+                                        'facility_id': facility_id,
+                                        'date': date_str,
+                                        'time': slot_time,
+                                        'court': slot['court']
+                                    })
+                                else:
+                                    for target_time in time_slots:
+                                        if self.time_ranges_match(slot_time, target_time):
+                                            all_available.append({
+                                                'facility_name': facility_name,
+                                                'facility_id': facility_id,
+                                                'date': date_str,
+                                                'time': slot_time,
+                                                'court': slot['court']
+                                            })
                             
                             successful_requests += 1
                             print(f"✅ {facility_name} 조회 성공 - 예약 가능: {len(available_slots)}개, 전체: {len(all_slots)}개")
