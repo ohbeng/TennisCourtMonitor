@@ -2,3 +2,9 @@ flask
 requests
 beautifulsoup4
 urllib3
+
+# tennis_court_monitor_yongin.py 추가 의존성
+# playwright 설치 후 브라우저도 설치 필요:
+#   pip install playwright
+#   playwright install chromium
+playwright
