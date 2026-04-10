@@ -977,7 +977,7 @@ _TEMPLATE = """<!DOCTYPE html>
     .cal-wrap { overflow-x:auto; }
     .cal-table { border-collapse:collapse; min-width:100%; }
     .cal-table th, .cal-table td { border:1px solid #444; padding:4px 6px; white-space:nowrap; font-size:0.8rem; vertical-align:top; }
-    .cal-table .col-court { background:#363636; color:#ddd; min-width:140px; max-width:180px; word-break:keep-all; position:sticky; left:0; z-index:1; }
+    .cal-table .col-court { background:#363636; color:#ddd; min-width:80px; max-width:100px; white-space:normal; word-break:keep-all; position:sticky; left:0; z-index:1; }
     .cal-table .col-date  { background:#2a2a2a; text-align:center; min-width:72px; }
     .cal-table .col-date.weekend { color:#ff8a65; }
     .cal-table .col-date.today   { background:#1b3a1b; color:#4CAF50; font-weight:bold; }
