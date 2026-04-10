@@ -338,11 +338,17 @@ _tg_chat_id   = ""
 
 def load_telegram_config():
     global _tg_bot_token, _tg_chat_id
-    # auth.txt [Telegram] 섹션에서 읽기
-    entries = _load_auth_section("Telegram")   # returns list of {username, password}
-    # [Telegram] 섹션은 KEY=VALUE 형식이므로 직접 파싱
+    # 1순위: 환경변수
+    env_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    env_chat  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if env_token and env_chat:
+        _tg_bot_token = env_token
+        _tg_chat_id   = env_chat
+        logging.info(f"[TG] 텔레그램 설정 환경변수에서 로드 (token={_tg_bot_token[:15]}...)")
+        return
+    # 2순위: auth.txt [Telegram] 섹션
     if not os.path.exists(ROOT_AUTH_FILE):
-        logging.warning("[TG] auth.txt 없음 – 알림 비활성화")
+        logging.warning("[TG] auth.txt 없음 + 환경변수 미설정 – 알림 비활성화")
         return
     in_section = False
     with open(ROOT_AUTH_FILE, encoding="utf-8") as f:
@@ -1259,7 +1265,7 @@ function yn_refresh() {
 }
 
 function yn_shortName(n) {
-  return n.replace(/\[유료\]|\[무료\]/g,'').replace(/_\d{2}월$/,'').trim();
+  return n.replace(/\\[유료\\]|\\[무료\\]/g,'').replace(/_\\d{2}월$/,'').trim();
 }
 
 function yn_buildAreaFilter(courts) {
