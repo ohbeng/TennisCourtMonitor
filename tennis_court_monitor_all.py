@@ -1297,6 +1297,15 @@ function yn_refresh() {
 function yn_shortName(n) {
   return n.replace(/\\[유료\\]|\\[무료\\]/g,'').replace(/_\\d{2}월$/,'').trim();
 }
+function yn_calName(n) {
+  var clean = n.replace(/\\[유료\\]|\\[무료\\]/g,'').replace(/_\\d{2}월$/,'').trim();
+  var idx = clean.indexOf('테니스장');
+  if (idx < 0) return clean;
+  var main = clean.slice(0, idx).trim();
+  var suffix = clean.slice(idx + 4).trim();
+  if (!suffix) return main;
+  return main + '<br><small>' + suffix + '</small>';
+}
 
 function yn_buildAreaFilter(courts) {
   var areas = [];
@@ -1361,8 +1370,8 @@ function yn_renderCal(courts, areaFilter) {
   html += '</tr></thead><tbody>';
 
   courtNames.forEach(function(name) {
-    html += '<tr><td class="col-court">' + yn_shortName(name)
-          + '<br><small class="text-muted">' + courtSet[name] + '</small></td>';
+    html += '<tr><td class="col-court">' + yn_calName(name)
+          + '<br><small class="text-muted">' + courtSet[name].replace(', ', '<br>') + '</small></td>';
     dates.forEach(function(dt) {
       var slots = slotMap[name] ? (slotMap[name][dt] || []) : [];
       if (!slots.length) { html += '<td class="col-date"><span class="no-slot">-</span></td>'; return; }
