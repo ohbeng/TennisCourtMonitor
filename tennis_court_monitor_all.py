@@ -1095,6 +1095,10 @@ _TEMPLATE = """<!DOCTYPE html>
     <!-- 달력 뷰 -->
     <div id="yn-view-cal" class="card-dark" style="border-radius:0 8px 8px 8px;">
       <h5>📅 달력 뷰 <small class="text-muted fs-6">(초록=예약가능, 빨강=마감)</small></h5>
+      <div class="d-flex gap-2 mb-2">
+        <button class="btn btn-sm btn-view" id="yn-calmode-all" onclick="yn_setCalMode('all')">전체</button>
+        <button class="btn btn-sm btn-view active" id="yn-calmode-avail" onclick="yn_setCalMode('avail')">예약가능</button>
+      </div>
       <div id="yn-areaFilter" class="mb-3 d-flex flex-wrap gap-2"></div>
       <div class="cal-wrap">
         <div id="yn-calDiv"><div class="text-center"><div class="spinner-border"></div></div></div>
@@ -1106,11 +1110,12 @@ _TEMPLATE = """<!DOCTYPE html>
 
 <script>
 // ─── 공통 상태 ────────────────────────────────────────────
-var _city    = 'sungnam';
-var _yn_tab  = 'cal';
-var _yn_area = null;
-var _yn_all  = [];
-var _yn_avail = [];
+var _city       = 'sungnam';
+var _yn_tab     = 'cal';
+var _yn_area    = null;
+var _yn_cal_mode = 'avail';
+var _yn_all     = [];
+var _yn_avail   = [];
 
 // ─── 도시 전환 ───────────────────────────────────────────
 function switchCity(city) {
@@ -1333,13 +1338,22 @@ function yn_setArea(a) {
   yn_renderCal(_yn_all, a);
 }
 
+function yn_setCalMode(mode) {
+  _yn_cal_mode = mode;
+  document.getElementById('yn-calmode-all').classList.toggle('active', mode === 'all');
+  document.getElementById('yn-calmode-avail').classList.toggle('active', mode === 'avail');
+  yn_renderCal(_yn_all, _yn_area);
+}
+
 function yn_renderCal(courts, areaFilter) {
   var d = document.getElementById('yn-calDiv');
   if (!courts.length) { d.innerHTML = '<div class="text-muted">데이터 없음</div>'; return; }
 
+  var availOnly = (_yn_cal_mode === 'avail');
+
   var dateSet = {};
   courts.forEach(function(x){ dateSet[x.date] = x.day_of_week; });
-  var dates = Object.keys(dateSet).sort();
+  var allDates = Object.keys(dateSet).sort();
 
   var courtSet = {};
   courts.forEach(function(x) {
@@ -1355,6 +1369,28 @@ function yn_renderCal(courts, areaFilter) {
     if (!slotMap[x.court_name][x.date]) slotMap[x.court_name][x.date] = [];
     slotMap[x.court_name][x.date].push(x);
   });
+
+  // 예약가능 모드: 예약 가능한 슬롯이 있는 날짜/코트만 필터링
+  var dates;
+  if (availOnly) {
+    dates = allDates.filter(function(dt) {
+      return courtNames.some(function(name) {
+        var slots = slotMap[name] ? (slotMap[name][dt] || []) : [];
+        return slots.some(function(s){ return s.is_available; });
+      });
+    });
+    courtNames = courtNames.filter(function(name) {
+      return dates.some(function(dt) {
+        var slots = slotMap[name] ? (slotMap[name][dt] || []) : [];
+        return slots.some(function(s){ return s.is_available; });
+      });
+    });
+    if (!dates.length || !courtNames.length) {
+      d.innerHTML = '<div class="text-warning">예약 가능한 코트가 없습니다.</div>'; return;
+    }
+  } else {
+    dates = allDates;
+  }
 
   var today  = new Date().toISOString().slice(0,10);
   var DOW_KO = ['일','월','화','수','목','금','토'];
@@ -1374,14 +1410,17 @@ function yn_renderCal(courts, areaFilter) {
           + '<br><small class="text-muted">' + courtSet[name].replace(', ', '<br>') + '</small></td>';
     dates.forEach(function(dt) {
       var slots = slotMap[name] ? (slotMap[name][dt] || []) : [];
+      if (availOnly) slots = slots.filter(function(s){ return s.is_available; });
       if (!slots.length) { html += '<td class="col-date"><span class="no-slot">-</span></td>'; return; }
       slots.sort(function(a,b){ return parseInt(a.time) - parseInt(b.time); });
       var cell = '';
       slots.forEach(function(s) {
         var t = s.time.replace(/ ~ .*/, '');
-        cell += s.is_available
+        cell += availOnly
           ? '<span class="slot-avail">✓ ' + t + '</span>'
-          : '<span class="slot-taken">✗ ' + t + '</span>';
+          : (s.is_available
+            ? '<span class="slot-avail">✓ ' + t + '</span>'
+            : '<span class="slot-taken">✗ ' + t + '</span>');
       });
       html += '<td class="col-date">' + cell + '</td>';
     });
