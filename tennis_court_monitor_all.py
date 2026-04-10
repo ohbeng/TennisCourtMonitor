@@ -243,10 +243,28 @@ def sn_parse_timetable(html):
 
 
 def sn_time_match(slot_time, target_time):
+    """슬롯 시간이 target 조건에 해당하는지 확인.
+    target 형식:
+      - 'HH:MM ~ HH:MM'  → 정확한 시작/종료 일치
+      - '~HH:MM'          → 슬롯 종료시간 ≤ HH:MM
+      - 'HH:MM~'          → 슬롯 시작시간 ≥ HH:MM
+    """
     try:
-        s1, e1 = [t.strip() for t in slot_time.replace("～", "~").split("~")]
-        s2, e2 = [t.strip() for t in target_time.replace("～", "~").split("~")]
-        return s1 == s2 and e1 == e2
+        parts = slot_time.replace("～", "~").split("~")
+        s1 = parts[0].strip()
+        e1 = parts[1].strip() if len(parts) > 1 else ""
+        def to_min(t): h, m = map(int, t.split(":")); return h*60+m
+        target = target_time.strip().replace("～", "~")
+        if target.startswith("~"):
+            # 종료시간 이하
+            return to_min(e1) <= to_min(target[1:].strip())
+        elif target.endswith("~"):
+            # 시작시간 이상
+            return to_min(s1) >= to_min(target[:-1].strip())
+        else:
+            # 정확한 범위 일치
+            s2, e2 = [t.strip() for t in target.split("~")]
+            return s1 == s2 and e1 == e2
     except Exception:
         return False
 
@@ -683,11 +701,11 @@ def yn_dates_until_end_of_month():
 
 
 def yn_load_monitoring_table():
-    """MonitoringTable.txt [yongin_monitor] 섹션 파싱"""
+    """NotifyTable.txt [yongin] 섹션으로 모니터링 필터 적용"""
     rules   = {}
     cur_gu  = None
     section = None
-    for line in _section_lines(MONITORING_TABLE, "yongin_monitor"):
+    for line in _section_lines(NOTIFY_TABLE, "yongin"):
         if not line:
             cur_gu = None; section = None; continue
         if line.endswith("구"):
@@ -868,13 +886,11 @@ def sungnam_loop():
         return
     if not facilities:
         if notify_facs:
-            # MonitoringTable 없음 → NotifyTable 시설을 전체 시간대로 스캔
-            facilities = [{"id": f["id"], "name": f["name"],
-                           "weekday_times": ["ALL"], "weekend_times": ["ALL"]}
-                          for f in notify_facs]
-            logging.warning(f"[SN] MonitoringTable.txt 없음 – NotifyTable 시설 전체 스캔: {[f['name'] for f in facilities]}")
+            # MonitoringTable 없음 → NotifyTable 시설/시간대를 그대로 스캔
+            facilities = notify_facs
+            logging.warning(f"[SN] MonitoringTable 없음 – NotifyTable 시설 스캔: {[f['name'] for f in facilities]}")
         else:
-            logging.error("[SN] MonitoringTable.txt, NotifyTable.txt 모두 없음 – 성남 모니터링 비활성화")
+            logging.error("[SN] NotifyTable.txt 없음 – 성남 모니터링 비활성화")
             return
     if notify_facs:
         logging.info(f"[SN] NotifyTable 로드: {[f['name'] for f in notify_facs]}")
@@ -1174,7 +1190,9 @@ function sn_renderAvail(courts) {
   var avail = courts.filter(function(x){ return x.is_available; });
   if (!avail.length) { d.innerHTML = '<div class="text-warning">예약 가능한 코트가 없습니다.</div>'; return; }
   var byFac = {};
+  var dowMap = {};
   avail.forEach(function(x) {
+    dowMap[x.date] = x.day_of_week;
     if (!byFac[x.facility_name]) byFac[x.facility_name] = {};
     if (!byFac[x.facility_name][x.date]) byFac[x.facility_name][x.date] = [];
     byFac[x.facility_name][x.date].push(x);
@@ -1190,8 +1208,9 @@ function sn_renderAvail(courts) {
           + '<span>' + fn + '</span><span class="toggle-icon">▲</span></div>'
           + '<div class="facility-content">';
     Object.keys(byFac[fn]).sort().forEach(function(dt) {
+      var dow = sn_dowShort(dowMap[dt] || '');
       html += '<div class="date-section"><div class="date-header" onclick="toggleSection(this)">'
-            + '<span>' + dt + '</span><span class="toggle-icon">▲</span></div>'
+            + '<span>' + dt + '(' + dow + ')</span><span class="toggle-icon">▲</span></div>'
             + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
             + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
       byFac[fn][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
@@ -1209,7 +1228,9 @@ function sn_renderTable(courts) {
   var d = document.getElementById('sn-tableDiv');
   if (!courts.length) { d.innerHTML = '<div class="text-muted">데이터 없음</div>'; return; }
   var byFac = {};
+  var dowMap = {};
   courts.forEach(function(x) {
+    dowMap[x.date] = x.day_of_week;
     if (!byFac[x.facility_name]) byFac[x.facility_name] = {};
     if (!byFac[x.facility_name][x.date]) byFac[x.facility_name][x.date] = [];
     byFac[x.facility_name][x.date].push(x);
@@ -1224,8 +1245,9 @@ function sn_renderTable(courts) {
           + '<span>' + fn + '</span><span class="toggle-icon">▲</span></div>'
           + '<div class="facility-content">';
     Object.keys(byFac[fn]).sort().forEach(function(dt) {
+      var dow = sn_dowShort(dowMap[dt] || '');
       html += '<div class="date-section"><div class="date-header" onclick="toggleSection(this)">'
-            + '<span>' + dt + '</span><span class="toggle-icon">▲</span></div>'
+            + '<span>' + dt + '(' + dow + ')</span><span class="toggle-icon">▲</span></div>'
             + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
             + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
       byFac[fn][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
@@ -1395,7 +1417,9 @@ function yn_renderAvail(courts) {
   var avail = courts.filter(function(x){ return x.is_available; });
   if (!avail.length) { d.innerHTML = '<div class="text-warning">예약 가능한 코트가 없습니다.</div>'; return; }
   var byLoc = {};
+  var dowMap = {};
   avail.forEach(function(x) {
+    dowMap[x.date] = x.day_of_week;
     if (!byLoc[x.location]) byLoc[x.location] = {};
     if (!byLoc[x.location][x.date]) byLoc[x.location][x.date] = [];
     byLoc[x.location][x.date].push(x);
@@ -1406,8 +1430,9 @@ function yn_renderAvail(courts) {
           + '<span>' + loc + '</span><span class="toggle-icon">▲</span></div>'
           + '<div class="facility-content">';
     Object.keys(byLoc[loc]).sort().forEach(function(dt) {
+      var dow = dowMap[dt] || '';
       html += '<div class="date-section"><div class="date-header" onclick="toggleSection(this)">'
-            + '<span>' + dt + '</span><span class="toggle-icon">▲</span></div>'
+            + '<span>' + dt + '(' + dow + ')</span><span class="toggle-icon">▲</span></div>'
             + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
             + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
       byLoc[loc][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
@@ -1425,7 +1450,9 @@ function yn_renderTable(courts) {
   var d = document.getElementById('yn-tableDiv');
   if (!courts.length) { d.innerHTML = '<div class="text-muted">데이터 없음</div>'; return; }
   var byLoc = {};
+  var dowMap = {};
   courts.forEach(function(x) {
+    dowMap[x.date] = x.day_of_week;
     if (!byLoc[x.location]) byLoc[x.location] = {};
     if (!byLoc[x.location][x.date]) byLoc[x.location][x.date] = [];
     byLoc[x.location][x.date].push(x);
@@ -1436,8 +1463,9 @@ function yn_renderTable(courts) {
           + '<span>' + loc + '</span><span class="toggle-icon">▲</span></div>'
           + '<div class="facility-content">';
     Object.keys(byLoc[loc]).sort().forEach(function(dt) {
+      var dow = dowMap[dt] || '';
       html += '<div class="date-section"><div class="date-header" onclick="toggleSection(this)">'
-            + '<span>' + dt + '</span><span class="toggle-icon">▲</span></div>'
+            + '<span>' + dt + '(' + dow + ')</span><span class="toggle-icon">▲</span></div>'
             + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
             + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
       byLoc[loc][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
