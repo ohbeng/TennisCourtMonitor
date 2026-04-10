@@ -830,7 +830,7 @@ def _sn_build_msg(courts):
     for dt in sorted(by_date):
         dow = {"월요일":"월","화요일":"화","수요일":"수","목요일":"목",
                "금요일":"금","토요일":"토","일요일":"일"}.get(dow_map.get(dt,""), "")
-        lines.append(f"*{_tg_escape(dt)}({_tg_escape(dow)})*")
+        lines.append(f"*{_tg_escape(dt)} \\({_tg_escape(dow)}\\)*")
         for fn, slots in sorted(by_date[dt].items()):
             lines.append(f"  🏟 {_tg_escape(fn)}")
             for s in sorted(slots, key=lambda x: x["time"]):
@@ -867,7 +867,15 @@ def sungnam_loop():
         logging.error("[SN] auth.txt 없음 – 성남 모니터링 비활성화")
         return
     if not facilities:
-        logging.warning("[SN] MonitoringTable.txt 없음 – 전체 시설 모니터링")
+        if notify_facs:
+            # MonitoringTable 없음 → NotifyTable 시설을 전체 시간대로 스캔
+            facilities = [{"id": f["id"], "name": f["name"],
+                           "weekday_times": ["ALL"], "weekend_times": ["ALL"]}
+                          for f in notify_facs]
+            logging.warning(f"[SN] MonitoringTable.txt 없음 – NotifyTable 시설 전체 스캔: {[f['name'] for f in facilities]}")
+        else:
+            logging.error("[SN] MonitoringTable.txt, NotifyTable.txt 모두 없음 – 성남 모니터링 비활성화")
+            return
     if notify_facs:
         logging.info(f"[SN] NotifyTable 로드: {[f['name'] for f in notify_facs]}")
     else:
