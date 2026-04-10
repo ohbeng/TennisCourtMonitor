@@ -107,11 +107,27 @@ def _load_auth_section(section):
     return accounts
 
 
+def _load_accounts_from_env(prefix):
+    """연디 id{prefix}1~3 / pwd{prefix}1~3 환경변수에서 계정 목록 반환.
+    하나라도 존재하면 해당 목록만 반환 (비어있으면 None 반환)."""
+    accounts = []
+    for i in range(1, 4):
+        uid = os.environ.get(f"id{prefix}{i}", "").strip()
+        pwd = os.environ.get(f"pwd{prefix}{i}", "").strip()
+        if uid and pwd:
+            accounts.append({"username": uid, "password": pwd})
+    return accounts if accounts else None
+
+
 # ═══════════════════════════════════════════════════════════
 # SUNGNAM 모니터링
 # ═══════════════════════════════════════════════════════════
 
 def sn_load_accounts():
+    env = _load_accounts_from_env("Sungnam")
+    if env:
+        logging.info(f"[SN] 계정 환경변수에서 로드: {[a['username'] for a in env]}")
+        return env
     return _load_auth_section("sungnam")
 
 
@@ -523,6 +539,10 @@ def yn_group_login(session, user_id, password):
 
 
 def yn_load_credentials():
+    env = _load_accounts_from_env("Yongin")
+    if env:
+        logging.info(f"[YN] 계정 환경변수에서 로드: {[a['username'] for a in env]}")
+        return [(a["username"], a["password"]) for a in env]
     return [(a["username"], a["password"]) for a in _load_auth_section("yongin")]
 
 
