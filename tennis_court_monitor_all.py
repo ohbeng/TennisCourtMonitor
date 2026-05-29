@@ -571,25 +571,45 @@ def yn_load_credentials():
 
 
 def yn_fetch_courts():
-    sess    = yn_make_session()
-    courts  = []
+    sess = yn_make_session()
+    courts = []
+    seen_ids = set()
     page_idx = 1
+
     while True:
         url = (f"{YN_BASE_URL}/sports/selectFcltyRceptResveListU.do"
                f"?key=4292&searchResveType=GNRLRESVE"
                f"&pageUnit={YN_PAGE_SIZE}&pageIndex={page_idx}")
         try:
-            resp = sess.get(url, timeout=20)
+            resp = sess.get(
+                url,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Referer": f"{YN_BASE_URL}/sports/selectFcltyRceptResveListU.do?key=4292",
+                },
+                timeout=20,
+            )
             resp.raise_for_status()
         except Exception as e:
             logging.warning(f"[YN] 코트 목록 요청 실패: {e}")
             break
+
         soup = BeautifulSoup(resp.text, "html.parser")
         for el in soup.select("div.popup, div.layer, div.layer_wrap"):
             el.decompose()
+
         items = soup.select("li.reserve_box_item")
         if not items:
+            title = soup.title.get_text(strip=True) if soup.title else ""
+            snippet = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:500]
+            logging.warning(
+                f"[YN] 코트 목록 HTML 파싱 실패 page={page_idx} "
+                f"status={resp.status_code} url={resp.url} title={title!r} body={snippet!r}"
+            )
             break
+
+        page_added = 0
         for item in items:
             link = item.select_one('a[href*="resveId"]')
             if not link:
@@ -597,19 +617,30 @@ def yn_fetch_courts():
             m = re.search(r"resveId=(\d+)", link.get("href", ""))
             if not m:
                 continue
-            resve_id     = m.group(1)
-            title_div    = item.select_one(".reserve_title")
+            resve_id = m.group(1)
+            if resve_id in seen_ids:
+                continue
+            seen_ids.add(resve_id)
+
+            title_div = item.select_one(".reserve_title")
             position_div = item.select_one(".reserve_position")
-            location     = position_div.get_text(strip=True) if position_div else ""
+            location = position_div.get_text(strip=True) if position_div else ""
             if position_div:
                 position_div.decompose()
             court_name = title_div.get_text(strip=True) if title_div else "알 수 없음"
             courts.append({"resve_id": resve_id, "name": court_name, "location": location})
+            page_added += 1
+
+        logging.info(f"[YN] 코트 목록 page={page_idx}: items={len(items)} added={page_added}")
         if len(items) < YN_PAGE_SIZE:
             break
         page_idx += 1
         time.sleep(0.3)
-    return [c for c in courts if "테니스" in c["name"]]
+
+    tennis_courts = [c for c in courts if "테니스" in c["name"]]
+    if courts and not tennis_courts:
+        logging.warning(f"[YN] 테니스 코트 필터 결과 0건. 샘플: {[c['name'] for c in courts[:5]]}")
+    return tennis_courts
 
 
 def yn_get_time_slots(session, resve_id, apply_url, date_yyyymmdd):
