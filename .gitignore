@@ -1,3 +1,28 @@
-__pycache__/ 
-*.pyc 
-auth.txt
+__pycache__/
+*.py[cod]
+.venv/
+
+# 개인 계정과 브라우저 로그인 세션
+/auth.txt
+/.nodriver_profile*/
+/.chrome_profile/
+/.pw_profile/
+
+# 실행 로그와 진단 결과
+*.log
+/log_all/
+/diag_out/
+/sn_diag.*
+
+# 로컬 개발 도구 설정
+/.agents/
+/.vscode/
+/node_modules/
+
+# 사용하지 않는 이전 실행 파일과 개발·진단 자료
+/backup/
+/tennis_court_monitor_temp.py
+/tennis_court_monitor_playweight.py
+/package.json
+/package-lock.json
+/burp_test

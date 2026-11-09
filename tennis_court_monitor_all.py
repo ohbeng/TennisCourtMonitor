@@ -19,18 +19,23 @@ import queue
 import logging
 import threading
 import argparse
+import asyncio
+import signal
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import unquote
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify
 
 import urllib3
 import urllib.request
+from browser_background import default_profile_directory, supports_background
 from sungnam_client import (
-    SungnamClient, AccessBlocked, LoginFailed, SessionExpired,
+    SungnamClient, BrowserLaunchError, AccessBlocked, LoginFailed, ManualLoginRequired, SessionExpired,
     parse_timetable as sn_parse_timetable,
 )
 
@@ -50,7 +55,6 @@ os.environ["no_proxy"] = ",".join(
 # ─────────────────────────────────────────────────────────
 _HERE        = os.path.dirname(os.path.abspath(__file__))
 SUNGNAM_DIR  = os.path.join(_HERE, "Sungnam")
-YONGIN_DIR   = os.path.join(_HERE, "Yongin")
 LOG_DIR      = os.path.join(_HERE, "log_all")
 KST          = timezone(timedelta(hours=9))
 
@@ -61,24 +65,33 @@ YN_TIME_API  = f"{YN_BASE_URL}/sports/selectRegistTimeByChosenDateFcltyRceptResv
 YN_PAGE_SIZE = 8
 YN_WORKERS   = 8
 
-NODRIVER_PROFILE = os.path.join(_HERE, ".nodriver_profile")
+NODRIVER_PROFILE = default_profile_directory(_HERE)
 SN_MANUAL_LOGIN = False
+SN_BACKGROUND = supports_background()
+SN_BROWSER_EXECUTABLE = os.environ.get("CHROME_BIN")
 # ─────────────────────────────────────────────────────────
 # Flask 앱 & 공유 상태
 # ─────────────────────────────────────────────────────────
 app   = Flask(__name__)
 _lock = threading.Lock()
+_sn_stop_event = threading.Event()
+_sn_client = None
 
 _sn_available   = []
 _sn_courts      = []
 _sn_last_update = ""
 _sn_status      = "starting"
 _sn_error       = ""
+_sn_collected   = {}
+_sn_targets     = {}
+_sn_cycle_done  = set()
 
 _yn_available   = []
 _yn_courts      = []
 _yn_last_update = ""
 _yn_period      = ""
+_yn_status      = "starting"
+_yn_error       = ""
 
 # ─────────────────────────────────────────────────────────
 # 로깅
@@ -184,7 +197,8 @@ def sn_load_monitoring_table():
     return facilities
 
 def sn_make_session():
-    return SungnamClient(NODRIVER_PROFILE, manual_login=SN_MANUAL_LOGIN)
+    return SungnamClient(NODRIVER_PROFILE, manual_login=SN_MANUAL_LOGIN, background=SN_BACKGROUND,
+                         browser_executable=SN_BROWSER_EXECUTABLE)
 
 
 def sn_login(session, username, password):
@@ -197,6 +211,12 @@ def sn_login(session, username, password):
 
 def sn_get_timetable(session, facility_id, date_str):
     return session.get_timetable(facility_id, date_str)
+
+
+def _sn_ensure_login(session, accounts):
+    if getattr(session, "manual_login", False) is True:
+        return session.login("", "")
+    return any(sn_login(session, acc["username"], acc["password"]) for acc in accounts)
 
 
 def sn_time_match(slot_time, target_time):
@@ -229,25 +249,22 @@ def sn_time_match(slot_time, target_time):
 _DOW_KO = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
 
 
-def sn_run_once(accounts, facilities, session=None):
+def sn_run_once(accounts, facilities, session=None, on_result=None):
     """성남 모니터링 1회. → (available_list, all_courts_list)"""
     if session is not None:
-        return _sn_scan(session, accounts, facilities)
+        return _sn_scan(session, accounts, facilities, on_result=on_result)
     session = sn_make_session()
     try:
-        return _sn_scan(session, accounts, facilities)
+        return _sn_scan(session, accounts, facilities, on_result=on_result)
     finally:
         session.close()
 
 
-def _sn_scan(session, accounts, facilities):
+def _sn_scan(session, accounts, facilities, on_result=None):
     # 로그인
     logged_in = session.authenticated
     if not logged_in:
-        for acc in accounts:
-            if sn_login(session, acc["username"], acc["password"]):
-                logged_in = True
-                break
+        logged_in = _sn_ensure_login(session, accounts)
     if not logged_in:
         raise LoginFailed("성남 모든 계정 로그인 실패")
 
@@ -273,11 +290,12 @@ def _sn_scan(session, accounts, facilities):
                     raise SessionExpired("성남 재로그인 후에도 세션이 만료되어 이번 조회를 중단합니다.")
                 relogin_used = True
                 logging.warning("[SN] 세션 만료 확인 — 이번 조회에서 1회만 재로그인합니다.")
-                if not any(sn_login(session, a["username"], a["password"]) for a in accounts):
+                if not _sn_ensure_login(session, accounts):
                     raise LoginFailed("성남 세션 복구 실패")
                 html = sn_get_timetable(session, fac["id"], date_str)
 
             avail_slots, all_slot_list = sn_parse_timetable(html)
+            courts_start, available_start = len(all_courts), len(all_available)
 
             for slot in all_slot_list:
                 all_courts.append({
@@ -297,9 +315,13 @@ def _sn_scan(session, accounts, facilities):
                         "date":          date_str,
                         "day_of_week":   dow,
                         "facility_name": fac["name"],
+                        "fac_id":        fac["id"],
                         "court":         slot["court"],
                         "time":          slot["time"],
                     })
+
+            if on_result is not None:
+                on_result(fac["id"], date_str, all_available[available_start:], all_courts[courts_start:])
 
             logging.info(f"[SN] {fac['name']} {date_str}: 예약가능 "
                          f"{sum(1 for s in avail_slots if 'ALL' in time_slots or any(sn_time_match(s['time'], t) for t in time_slots))}개")
@@ -308,10 +330,63 @@ def _sn_scan(session, accounts, facilities):
     return all_available, all_courts
 
 
+def _sn_refresh_snapshot():
+    """호출자는 _lock을 보유한다. 실패한 구간은 마지막 성공 자료를 유지한다."""
+    global _sn_available, _sn_courts, _sn_last_update
+    _sn_available, _sn_courts = [], []
+    for key in _sn_targets:
+        snapshot = _sn_collected.get(key)
+        if snapshot is None:
+            continue
+        metadata = {"last_checked": snapshot["last_update"], "is_previous": key not in _sn_cycle_done}
+        _sn_available.extend(dict(row, **metadata) for row in snapshot["available"])
+        _sn_courts.extend(dict(row, **metadata) for row in snapshot["courts"])
+    _sn_last_update = max((value["last_update"] for value in _sn_collected.values()), default="")
+
+
+def _sn_begin_cycle(facilities):
+    global _sn_targets, _sn_cycle_done
+    today = datetime.now(KST)
+    targets = {}
+    for fac in facilities:
+        for offset in range(4):
+            date = today + timedelta(days=offset)
+            times = fac["weekend_times"] if date.weekday() >= 5 else fac["weekday_times"]
+            if times:
+                targets[fac["id"], date.strftime("%Y-%m-%d")] = fac["name"]
+    with _lock:
+        _sn_targets, _sn_cycle_done = targets, set()
+        if _sn_collected:
+            for key in list(_sn_collected):
+                if key not in targets:
+                    del _sn_collected[key]
+            _sn_refresh_snapshot()
+
+
+def _sn_publish_result(facility_id, date, available, courts):
+    global _sn_error
+    key = facility_id, date
+    with _lock:
+        if key not in _sn_targets:
+            return
+        _sn_collected[key] = {"available": list(available), "courts": list(courts),
+                              "last_update": datetime.now(KST).isoformat()}
+        _sn_cycle_done.add(key)
+        _sn_error = ""
+        _sn_refresh_snapshot()
+
+
+def _sn_coverage():
+    """호출자는 _lock을 보유한다. 조회 성공 0건과 미수집을 구분한다."""
+    return [{"fac_id": key[0], "date": key[1], "facility_name": name,
+             "status": "current" if key in _sn_cycle_done else "previous" if key in _sn_collected else "missing",
+             "last_update": _sn_collected.get(key, {}).get("last_update", "")}
+            for key, name in _sn_targets.items()]
+
+
 # ─────────────────────────────────────────────────────────
 # Telegram 알림
 # ─────────────────────────────────────────────────────────
-MONITORING_TABLE = os.path.join(_HERE, "MonitoringTable.txt")   # 용인 스캔 필터
 NOTIFY_TABLE     = os.path.join(_HERE, "NotifyTable.txt")        # 성남+용인 텔레그램 알림
 
 _tg_bot_token = ""
@@ -489,7 +564,6 @@ def _courts_key(courts):
 # ═══════════════════════════════════════════════════════════
 
 YN_AUTH_FILE = ROOT_AUTH_FILE
-YN_MON_TABLE = MONITORING_TABLE
 
 
 def yn_make_session():
@@ -498,6 +572,11 @@ def yn_make_session():
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
+    retry = Retry(total=3, connect=3, read=3, status=3, backoff_factor=0.5,
+                  status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods=frozenset({"GET"}), respect_retry_after_header=True)
+    s.mount("https://", HTTPAdapter(max_retries=retry))
+    s.mount("http://", HTTPAdapter(max_retries=retry))
     return s
 
 
@@ -535,6 +614,13 @@ def yn_load_credentials():
 
 def yn_fetch_courts():
     sess = yn_make_session()
+    try:
+        return _yn_fetch_courts(sess)
+    finally:
+        sess.close()
+
+
+def _yn_fetch_courts(sess):
     courts = []
     seen_ids = set()
     page_idx = 1
@@ -555,8 +641,7 @@ def yn_fetch_courts():
             )
             resp.raise_for_status()
         except Exception as e:
-            logging.warning(f"[YN] 코트 목록 요청 실패: {e}")
-            break
+            raise RuntimeError(f"용인 코트 목록 {page_idx}쪽 요청 실패. 수집 중인 일부 목록은 게시하지 않습니다: {e}") from e
 
         soup = BeautifulSoup(resp.text, "html.parser")
         for el in soup.select("div.popup, div.layer, div.layer_wrap"):
@@ -566,11 +651,10 @@ def yn_fetch_courts():
         if not items:
             title = soup.title.get_text(strip=True) if soup.title else ""
             snippet = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:500]
-            logging.warning(
+            raise RuntimeError(
                 f"[YN] 코트 목록 HTML 파싱 실패 page={page_idx} "
                 f"status={resp.status_code} url={resp.url} title={title!r} body={snippet!r}"
             )
-            break
 
         page_added = 0
         for item in items:
@@ -595,6 +679,8 @@ def yn_fetch_courts():
             page_added += 1
 
         logging.info(f"[YN] 코트 목록 page={page_idx}: items={len(items)} added={page_added}")
+        if page_added == 0:
+            raise RuntimeError(f"용인 코트 목록 {page_idx}쪽에서 같은 목록이 반복되어 수집을 중단합니다.")
         if len(items) < YN_PAGE_SIZE:
             break
         page_idx += 1
@@ -871,11 +957,11 @@ def _yn_build_msg(courts):
 
 
 def sungnam_loop():
-    global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error
+    global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error, _sn_client
     accounts     = sn_load_accounts()
     facilities   = sn_load_monitoring_table()
     notify_facs  = sn_load_notify_table()
-    if not accounts:
+    if not accounts and not SN_MANUAL_LOGIN:
         _sn_status, _sn_error = "error", "auth.txt에 성남 계정이 없습니다."
         logging.error("[SN] auth.txt 없음 – 성남 모니터링 비활성화")
         return
@@ -893,22 +979,36 @@ def sungnam_loop():
     else:
         logging.warning("[SN] NotifyTable.txt 없음 – 성남 텔레그램 알림 비활성화")
     session = sn_make_session()
+    with _lock:
+        _sn_client = session
     try:
-        _sungnam_monitor_loop(session, accounts, facilities, notify_facs)
+        if not _sn_stop_event.is_set():
+            _sungnam_monitor_loop(session, accounts, facilities, notify_facs)
+    except asyncio.CancelledError:
+        logging.info("[SN] 종료 요청을 받아 모니터용 Chrome을 정리합니다.")
     finally:
-        session.close()
+        try:
+            session.close()
+        finally:
+            with _lock:
+                _sn_client = None
 
 
 def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
     global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error
     sn_prev_key = [""]
-    while True:
+    while not _sn_stop_event.is_set():
         retry_delay = 90
+        manual_login = getattr(session, "manual_login", False) is True
         try:
+            _sn_begin_cycle(facilities)
             with _lock:
-                _sn_status = "scanning"
+                if manual_login and not session.authenticated:
+                    _sn_status, _sn_error = "waiting_login", "열린 Chrome에서 직접 로그인해 주세요."
+                else:
+                    _sn_status = "scanning"
             logging.info("[SN] ======= 성남 모니터링 시작 =======")
-            avail, courts = sn_run_once(accounts, facilities, session=session)
+            avail, courts = sn_run_once(accounts, facilities, session=session, on_result=_sn_publish_result)
             with _lock:
                 _sn_available   = avail
                 _sn_courts      = courts
@@ -924,17 +1024,41 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
                 _notify_if_changed("[SN]", notify_slots, sn_prev_key, _sn_build_msg)
         except Exception as e:
             with _lock:
-                _sn_status = "blocked" if isinstance(e, AccessBlocked) else "error"
+                _sn_status = ("blocked" if isinstance(e, AccessBlocked) else
+                              "waiting_login" if isinstance(e, ManualLoginRequired) else "error")
                 _sn_error = str(e)
+            if isinstance(e, BrowserLaunchError):
+                logging.error("[SN] %s", e)
+                logging.error("[SN] Chrome 시작 재시도를 중단합니다. 용인 모니터링은 계속됩니다.")
+                return
             if isinstance(e, (AccessBlocked, LoginFailed)):
-                retry_delay = 300
-            logging.error(f"[SN] 루프 오류: {e}")
-            logging.info("[SN] 이전 수집 결과를 유지합니다. %s초 후 재확인합니다.", retry_delay)
+                if not manual_login:
+                    logging.error("[SN] %s", e)
+                    logging.error("[SN] 조회를 중단합니다. 이미 읽은 시간표는 웹 화면에 유지합니다. 사이트 안내를 확인하거나 --sn-manual-login으로 실행하세요.")
+                    return
+                retry_delay = 5
+                logging.warning("[SN] %s", e)
+                logging.info("[SN] 이전 수집 결과를 유지하고 Chrome에서 직접 로그인할 때까지 기다립니다.")
+            else:
+                logging.error(f"[SN] 루프 오류: {e}")
+                logging.info("[SN] 이전 수집 결과를 유지합니다. %s초 후 재확인합니다.", retry_delay)
         session.wait(retry_delay)
 
 
+def stop_sungnam(thread):
+    """브라우저를 소유한 스레드에서 정리한 뒤 프로그램을 종료한다."""
+    _sn_stop_event.set()
+    with _lock:
+        session = _sn_client
+    if session is not None:
+        session.request_stop()
+    thread.join(timeout=10)
+    if thread.is_alive():
+        logging.warning("[SN] Chrome 종료 대기가 초과되었습니다.")
+
+
 def yongin_loop():
-    global _yn_available, _yn_courts, _yn_last_update, _yn_period
+    global _yn_available, _yn_courts, _yn_last_update, _yn_period, _yn_status, _yn_error
     notify_table = yn_load_notify_table()
     if notify_table:
         logging.info(f"[YN] NotifyTable 로드: {list(notify_table.keys())}")
@@ -943,6 +1067,8 @@ def yongin_loop():
     yn_prev_key = [""]
     while True:
         try:
+            with _lock:
+                _yn_status = "scanning"
             logging.info("[YN] ======= 용인 모니터링 시작 =======")
             avail, courts, period = yn_run_once()
             with _lock:
@@ -950,6 +1076,7 @@ def yongin_loop():
                 _yn_courts      = courts
                 _yn_last_update = datetime.now(KST).isoformat()
                 _yn_period      = period
+                _yn_status, _yn_error = "ok", ""
             logging.info(f"[YN] 완료: 예약가능 {len(avail)}개 / 전체 {len(courts)}개")
             # 알림 체크: avail 중 notify 조건 맞는 슬롯 (MonitoringTable 이미 필터됨)
             if notify_table:
@@ -957,6 +1084,8 @@ def yongin_loop():
                 logging.info(f"[YN] 알림 대상 슬롯: {len(notify_slots)}개")
                 _notify_if_changed("[YN]", notify_slots, yn_prev_key, _yn_build_msg)
         except Exception as e:
+            with _lock:
+                _yn_status, _yn_error = "error", str(e)
             logging.error(f"[YN] 루프 오류: {e}")
         time.sleep(300)
 
@@ -1127,6 +1256,8 @@ _TEMPLATE = """<!DOCTYPE html>
 <script>
 // ─── 공통 상태 ────────────────────────────────────────────
 var _city       = 'sungnam';
+var _sn_data    = null;
+var _yn_data    = null;
 var _yn_tab     = 'cal';
 var _yn_area    = null;
 var _yn_cal_mode = 'avail';
@@ -1140,12 +1271,45 @@ function switchCity(city) {
   document.getElementById('city-yongin').style.display  = city === 'yongin'  ? '' : 'none';
   document.getElementById('btn-sungnam').classList.toggle('active', city === 'sungnam');
   document.getElementById('btn-yongin').classList.toggle('active',  city === 'yongin');
-  doRefresh();
+  renderStatus();
 }
 
 function doRefresh() {
   if (_city === 'sungnam') sn_refresh();
   else yn_refresh();
+}
+
+function renderStatus() {
+  var data = _city === 'sungnam' ? _sn_data : _yn_data;
+  document.getElementById('lastUpdate').textContent = data && data.last_update || '-';
+  document.getElementById('periodInfo').textContent = _city === 'sungnam' ? '오늘 ~ +3일' : (data && data.period || '');
+  var status = document.getElementById('monitorStatus');
+  status.style.color = data && data.error ? '#ff8a65' : '#aaa';
+  if (!data) {
+    status.textContent = '첫 시간표를 불러오는 중…';
+    return;
+  }
+  if (_city === 'yongin') {
+    status.textContent = data.error ? '조회 실패: ' + data.error + (data.last_update ? ' (이전 수집 결과 표시 중)' : '')
+      : (data.status === 'ok' ? '정상 수집 완료' : '용인 조회 중…');
+    return;
+  }
+  var progress = data.progress || {};
+  var coverage = data.coverage || [];
+  var missing = coverage.filter(function(x){ return x.status === 'missing'; }).length;
+  var previous = coverage.filter(function(x){ return x.status === 'previous'; }).length;
+  var partial = progress.total > 0 && progress.completed < progress.total;
+  var parts = [];
+  if (data.error) {
+    parts.push((partial && data.last_update ? '일부 수집 · ' : '')
+      + (data.status === 'waiting_login' ? '로그인 대기: ' : '조회 중단: ') + data.error);
+  } else {
+    parts.push(data.status === 'ok' ? '정상 수집 완료' : '성남 수집 중…');
+  }
+  if (progress.total) parts.push('확인 완료 ' + progress.completed + '/' + progress.total + ' (시설·날짜)');
+  if (missing) parts.push('미수집 ' + missing + '건');
+  if (previous) parts.push('이전 조회 ' + previous + '건 포함');
+  status.textContent = parts.join(' | ');
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1155,13 +1319,9 @@ function sn_refresh() {
   ['sn-interestDiv','sn-availDiv','sn-tableDiv'].forEach(function(id) {
     document.getElementById(id).innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
   });
-  fetch('/api/sungnam').then(function(r){ return r.json(); }).then(function(data) {
-    document.getElementById('lastUpdate').textContent = data.last_update || '-';
-    document.getElementById('periodInfo').textContent = '오늘 ~ +3일';
-    var status = document.getElementById('monitorStatus');
-    status.textContent = data.error ? '조회 실패: ' + data.error + (data.last_update ? ' (이전 수집 결과 표시 중)' : '')
-      : (data.status === 'ok' ? '정상 수집 완료' : '성남 조회 중…');
-    status.style.color = data.error ? '#ff8a65' : '#aaa';
+  fetch('/api/sungnam', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(data) {
+    _sn_data = data;
+    if (_city === 'sungnam') renderStatus();
     if (!data.last_update) {
       ['sn-interestDiv','sn-availDiv','sn-tableDiv'].forEach(function(id) {
         document.getElementById(id).textContent = data.error ? '시간표를 수집하지 못했습니다.' : '첫 시간표 수집을 기다리고 있습니다.';
@@ -1189,9 +1349,12 @@ function sn_dowShort(dow) {
   var map = {'월요일':'월','화요일':'화','수요일':'수','목요일':'목','금요일':'금','토요일':'토','일요일':'일'};
   return map[dow] || dow;
 }
+function sn_previousBadge(slot) {
+  return slot.is_previous ? ' <small class="text-warning">(이전 조회)</small>' : '';
+}
 function sn_renderInterest(avail) {
   var d = document.getElementById('sn-interestDiv');
-  if (!avail.length) { d.innerHTML = '<div class="text-warning">예약 가능한 관심 코트가 없습니다.</div>'; return; }
+  if (!avail.length) { d.innerHTML = '<div class="text-warning">수집된 시간표에 예약 가능한 관심 코트가 없습니다.</div>'; return; }
   var byDate = {};
   var dowMap = {};
   avail.forEach(function(x) {
@@ -1207,7 +1370,7 @@ function sn_renderInterest(avail) {
     Object.keys(byDate[dt]).sort().forEach(function(fn) {
       html += '<div class="sn-facility">🏟 ' + fn + '</div>';
       byDate[dt][fn].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
-        html += '<div class="sn-slot">✓ ' + s.court + ' &nbsp; ' + s.time + '</div>';
+        html += '<div class="sn-slot">✓ ' + s.court + ' &nbsp; ' + s.time + sn_previousBadge(s) + '</div>';
       });
     });
     html += '</div>';
@@ -1219,7 +1382,7 @@ function sn_renderInterest(avail) {
 function sn_renderAvail(courts) {
   var d = document.getElementById('sn-availDiv');
   var avail = courts.filter(function(x){ return x.is_available; });
-  if (!avail.length) { d.innerHTML = '<div class="text-warning">예약 가능한 코트가 없습니다.</div>'; return; }
+  if (!avail.length) { d.innerHTML = '<div class="text-warning">수집된 시간표에 예약 가능한 코트가 없습니다.</div>'; return; }
   var byFac = {};
   var dowMap = {};
   avail.forEach(function(x) {
@@ -1245,7 +1408,7 @@ function sn_renderAvail(courts) {
             + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
             + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
       byFac[fn][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
-        html += '<tr><td>' + s.court + '</td><td>' + s.time + '</td><td class="status-available">예약 가능</td></tr>';
+        html += '<tr><td>' + s.court + '</td><td>' + s.time + sn_previousBadge(s) + '</td><td class="status-available">예약 가능</td></tr>';
       });
       html += '</tbody></table></div></div>';
     });
@@ -1285,7 +1448,7 @@ function sn_renderTable(courts) {
         var statusCls  = s.is_available ? 'status-available' : 'status-reserved';
         var statusText = s.is_available ? '예약 가능'
                        : (s.reservation_name ? s.reservation_name + ' 님 예약' : '예약됨');
-        html += '<tr><td>' + s.court + '</td><td>' + s.time
+        html += '<tr><td>' + s.court + '</td><td>' + s.time + sn_previousBadge(s)
               + '</td><td class="' + statusCls + '">' + statusText + '</td></tr>';
       });
       html += '</tbody></table></div></div>';
@@ -1312,10 +1475,15 @@ function yn_refresh() {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
   });
-  fetch('/api/yongin').then(function(r){ return r.json(); }).then(function(data) {
-    document.getElementById('monitorStatus').textContent = '';
-    document.getElementById('lastUpdate').textContent = data.last_update || '-';
-    document.getElementById('periodInfo').textContent = data.period || '';
+  fetch('/api/yongin', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(data) {
+    _yn_data = data;
+    if (_city === 'yongin') renderStatus();
+    if (!data.last_update) {
+      ['yn-interestDiv','yn-availDiv','yn-tableDiv','yn-calDiv'].forEach(function(id) {
+        document.getElementById(id).textContent = data.error ? '시간표를 수집하지 못했습니다.' : '첫 시간표 수집을 기다리고 있습니다.';
+      });
+      return;
+    }
     _yn_avail = data.available  || [];
     _yn_all   = data.all_courts || [];
     yn_renderInterest(_yn_avail);
@@ -1558,13 +1726,9 @@ function yn_renderTable(courts) {
 
 // ─── 초기화 ──────────────────────────────────────────────
 switchCity('sungnam');         // 기본: 성남
-setInterval(doRefresh, 60000); // 1분마다 현재 도시 갱신
-// 백그라운드에서 양쪽 데이터 선 로딩
+// 처음 열 때 양쪽 결과를 한 번만 읽는다. 이후에는 새로고침 버튼으로만 조회한다.
 sn_refresh();
-fetch('/api/yongin').then(function(r){ return r.json(); }).then(function(data){
-  _yn_avail = data.available  || [];
-  _yn_all   = data.all_courts || [];
-}).catch(function(){});
+yn_refresh();
 </script>
 </body>
 </html>"""
@@ -1587,6 +1751,8 @@ def api_sungnam():
             "last_update": _sn_last_update,
             "status":      _sn_status,
             "error":       _sn_error,
+            "progress":    {"completed": len(_sn_cycle_done), "total": len(_sn_targets)},
+            "coverage":    _sn_coverage(),
         })
 
 
@@ -1598,33 +1764,67 @@ def api_yongin():
             "all_courts":  _yn_courts,
             "last_update": _yn_last_update,
             "period":      _yn_period,
+            "status":      _yn_status,
+            "error":       _yn_error,
         })
 
 
 # ─────────────────────────────────────────────────────────
 # 진입점
 # ─────────────────────────────────────────────────────────
-if __name__ == "__main__":
+def create_argument_parser():
     parser = argparse.ArgumentParser(description="성남+용인 테니스 코트 통합 모니터링")
     parser.add_argument("--port", type=int, default=8000, help="Flask 포트 (기본: 8000)")
-    parser.add_argument("--sn-manual-login", action="store_true",
-                        help="성남 Chrome 창을 열고 직접 로그인 (최대 180초 대기)")
-    args = parser.parse_args()
+    login_mode = parser.add_mutually_exclusive_group()
+    login_mode.add_argument("--sn-manual-login", dest="sn_manual_login", action="store_true",
+                            help="성남 Chrome에서 직접 로그인하고 세션 재사용")
+    login_mode.add_argument("--sn-auto-login", dest="sn_manual_login", action="store_false",
+                            help="성남 저장 계정으로 자동 로그인 (기본값)")
+    parser.set_defaults(sn_manual_login=False)
+    window_mode = parser.add_mutually_exclusive_group()
+    window_mode.add_argument("--sn-show-browser", dest="sn_background", action="store_false",
+                             help="모니터용 Chrome과 시간표 창을 화면에 표시")
+    window_mode.add_argument("--sn-background", dest="sn_background", action="store_true",
+                             help="Windows 전용 작업 공간 / Linux Xvfb에서 Chrome 실행 (두 OS의 기본값)")
+    parser.set_defaults(sn_background=supports_background())
+    parser.add_argument("--sn-browser", default=os.environ.get("CHROME_BIN"),
+                        help="Chrome/Chromium 실행 경로 (기본: CHROME_BIN 또는 자동 탐색)")
+    parser.add_argument("--sn-profile", default=NODRIVER_PROFILE,
+                        help="성남 전용 Chrome 프로필 폴더 (기본: 운영체제별 별도 폴더)")
+    return parser
+
+
+def handle_termination(signum, frame):
+    # Linux 서비스의 SIGTERM도 아래 finally를 거쳐 전용 브라우저를 정리한다.
+    logging.info("종료 신호를 받았습니다 (signal=%s).", signum)
+    raise SystemExit(0)
+
+
+if __name__ == "__main__":
+    args = create_argument_parser().parse_args()
     SN_MANUAL_LOGIN = args.sn_manual_login
+    SN_BACKGROUND = args.sn_background
+    SN_BROWSER_EXECUTABLE = args.sn_browser
+    NODRIVER_PROFILE = os.path.abspath(os.path.expanduser(args.sn_profile))
+    signal.signal(signal.SIGTERM, handle_termination)
 
     setup_logging()
     load_telegram_config()
     logging.info("=" * 60)
     logging.info("🎾 테니스 코트 통합 모니터링 시작")
     logging.info(f"   성남 설정: {SUNGNAM_DIR}")
-    logging.info(f"   용인 설정: {YONGIN_DIR}")
+    logging.info(f"   용인 설정: {NOTIFY_TABLE}")
+    logging.info("   성남 로그인: %s", "직접 로그인 / 기존 세션 재사용" if SN_MANUAL_LOGIN else "저장된 계정으로 자동 로그인")
+    logging.info("   성남 Chrome: %s", "백그라운드 실행" if SN_BACKGROUND and not SN_MANUAL_LOGIN else "화면 표시")
     logging.info("=" * 60)
 
     # 백그라운드 모니터링 스레드 시작
     t_sn = threading.Thread(target=sungnam_loop, daemon=True, name="sungnam")
     t_yn = threading.Thread(target=yongin_loop,  daemon=True, name="yongin")
-    t_sn.start()
-    t_yn.start()
-
-    logging.info(f"🌐 통합 웹 UI: http://localhost:{args.port}")
-    app.run(host="0.0.0.0", port=args.port, debug=False)
+    try:
+        t_sn.start()
+        t_yn.start()
+        logging.info(f"🌐 통합 웹 UI: http://localhost:{args.port}")
+        app.run(host="0.0.0.0", port=args.port, debug=False)
+    finally:
+        stop_sungnam(t_sn)
