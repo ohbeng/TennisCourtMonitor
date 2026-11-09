@@ -2,9 +2,20 @@ flask
 requests
 beautifulsoup4
 urllib3
+nodriver==0.50.3
 
-# tennis_court_monitor_yongin.py 추가 의존성
+# 별도 Playwright 실행 파일용 의존성
 # playwright 설치 후 브라우저도 설치 필요:
 #   pip install playwright
 #   playwright install chromium
 playwright
+
+pyautogui          # 마우스/키보드 자동 제어 라이브러리
+opencv-python      # 이미지 처리 및 인식 라이브러리 (pyautogui 의존성)
+selenium           # 웹 브라우저 자동화 라이브러리
+webdriver-manager  # 웹 드라이버 자동 관리 라이브러리
+undetected_chromedriver # 별도 Selenium 실행 파일용
+Pillow             # 파이썬 이미지 처리 라이브러리
+pyperclip          # 클립보드 제어 라이브러리 (한글 입력 등에 활용)
+user_agents        # 사용자 에이전트 정보 처리 라이브러리
+chromedriver_autoinstaller # 크롬 드라이버 자동 설치/관리 라이브러리

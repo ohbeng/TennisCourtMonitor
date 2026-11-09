@@ -24,11 +24,26 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import unquote
 
 import requests
-import urllib3
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify
 
+import urllib3
+import urllib.request
+from sungnam_client import (
+    SungnamClient, AccessBlocked, LoginFailed, SessionExpired,
+    parse_timetable as sn_parse_timetable,
+)
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# The system proxy doesn't exempt 127.0.0.1, which breaks nodriver's DevTools connection.
+# Once *_proxy env vars exist, urllib ignores the registry, so copy the registry proxies first.
+for _scheme, _url in urllib.request.getproxies().items():
+    if _scheme != "no":
+        os.environ.setdefault(f"{_scheme}_proxy", _url)
+os.environ["no_proxy"] = ",".join(
+    [p for p in os.environ.get("no_proxy", "").split(",") if p] + ["127.0.0.1", "localhost"]
+)
 
 # ─────────────────────────────────────────────────────────
 # 상수
@@ -39,12 +54,15 @@ YONGIN_DIR   = os.path.join(_HERE, "Yongin")
 LOG_DIR      = os.path.join(_HERE, "log_all")
 KST          = timezone(timedelta(hours=9))
 
+
 SN_BASE_URL  = "https://res.isdc.co.kr"
 YN_BASE_URL  = "https://publicsports.yongin.go.kr/publicsports"
 YN_TIME_API  = f"{YN_BASE_URL}/sports/selectRegistTimeByChosenDateFcltyRceptResveApply.do"
 YN_PAGE_SIZE = 8
 YN_WORKERS   = 8
 
+NODRIVER_PROFILE = os.path.join(_HERE, ".nodriver_profile")
+SN_MANUAL_LOGIN = False
 # ─────────────────────────────────────────────────────────
 # Flask 앱 & 공유 상태
 # ─────────────────────────────────────────────────────────
@@ -54,6 +72,8 @@ _lock = threading.Lock()
 _sn_available   = []
 _sn_courts      = []
 _sn_last_update = ""
+_sn_status      = "starting"
+_sn_error       = ""
 
 _yn_available   = []
 _yn_courts      = []
@@ -123,6 +143,7 @@ def _load_accounts_from_env(prefix):
 # SUNGNAM 모니터링
 # ═══════════════════════════════════════════════════════════
 
+
 def sn_load_accounts():
     env = _load_accounts_from_env("Sungnam")
     if env:
@@ -162,84 +183,20 @@ def sn_load_monitoring_table():
                 facilities[-1][key].append(line)
     return facilities
 
-
 def sn_make_session():
-    s        = requests.Session()
-    s.verify = False
-    s.headers["User-Agent"] = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
-    return s
+    return SungnamClient(NODRIVER_PROFILE, manual_login=SN_MANUAL_LOGIN)
 
 
 def sn_login(session, username, password):
     try:
-        resp = session.post(
-            f"{SN_BASE_URL}/rest_loginCheck.do",
-            data={"web_id": username, "web_pw": password},
-            headers={"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                     "X-Requested-With": "XMLHttpRequest",
-                     "Referer": f"{SN_BASE_URL}/login.do"},
-            verify=False, timeout=15,
-        )
-        return resp.status_code == 200 and resp.text.strip() == "success"
-    except Exception as e:
-        logging.error(f"[SN] 로그인 오류: {e}")
+        return session.login(username, password)
+    except LoginFailed as exc:
+        logging.warning("[SN] %s", exc)
         return False
 
 
 def sn_get_timetable(session, facility_id, date_str):
-    try:
-        parts          = date_str.split("-")
-        formatted_date = f"{parts[0]}-{int(parts[1])}-{int(parts[2])}"
-        resp = session.post(
-            f"{SN_BASE_URL}/otherTimetable.do",
-            data={"facId": facility_id, "resdate": formatted_date},
-            headers={"Content-Type": "application/x-www-form-urlencoded",
-                     "Referer": f"{SN_BASE_URL}/reservationInfo.do"},
-            verify=False, timeout=15,
-        )
-        if resp.status_code == 200 and "login.do" not in resp.url and "로그인" not in resp.text:
-            return resp.text
-        return None
-    except Exception as e:
-        logging.error(f"[SN] 타임테이블 오류 {facility_id} {date_str}: {e}")
-        return None
-
-
-def sn_parse_timetable(html):
-    if not html:
-        return [], []
-    available_slots, all_slots = [], []
-    court_sections = re.findall(
-        r"<label class=\'tit required lb-timetable\'>.*?(\d+)번\s*코트.*?</label>"
-        r".*?<div class=\'tableBox mgb30\'.*?<tbody>(.*?)</tbody>",
-        html, re.DOTALL,
-    )
-    for court_num, content in court_sections:
-        if "이용가능한 시간이 없습니다" in content:
-            continue
-        all_times = re.findall(
-            r"<tr>\s*<td class=\'td-title\'>\s*(.*?)\s*</td>\s*<td class=\'td-title\'>(\d+)</td>"
-            r"\s*<td class=\'td-title\'>(\d{1,2}:\d{2})\s*[~～]\s*(\d{1,2}:\d{2})</td>"
-            r"\s*<td class=\'td-title\'>\s*(.*?)\s*</td>\s*</tr>",
-            content,
-        )
-        for btn_html, _, start_t, end_t, rsvname in all_times:
-            if len(start_t.split(":")[0]) == 1:
-                start_t = "0" + start_t
-            if len(end_t.split(":")[0]) == 1:
-                end_t = "0" + end_t
-            is_avail = "예약가능" in btn_html
-            slot = {"court": f"{court_num}번 코트",
-                    "time": f"{start_t} ~ {end_t}",
-                    "is_available": is_avail,
-                    "reservation_name": rsvname.strip()}
-            all_slots.append(slot)
-            if is_avail:
-                available_slots.append(slot)
-    return available_slots, all_slots
+    return session.get_timetable(facility_id, date_str)
 
 
 def sn_time_match(slot_time, target_time):
@@ -272,47 +229,53 @@ def sn_time_match(slot_time, target_time):
 _DOW_KO = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
 
 
-def sn_run_once(accounts, facilities):
+def sn_run_once(accounts, facilities, session=None):
     """성남 모니터링 1회. → (available_list, all_courts_list)"""
+    if session is not None:
+        return _sn_scan(session, accounts, facilities)
+    session = sn_make_session()
+    try:
+        return _sn_scan(session, accounts, facilities)
+    finally:
+        session.close()
+
+
+def _sn_scan(session, accounts, facilities):
     # 로그인
-    session   = sn_make_session()
-    logged_in = False
-    for acc in accounts:
-        if sn_login(session, acc["username"], acc["password"]):
-            logging.info(f"[SN] ✅ 로그인: {acc['username']}")
-            logged_in = True
-            break
+    logged_in = session.authenticated
     if not logged_in:
-        logging.error("[SN] ❌ 모든 계정 로그인 실패")
-        return [], []
+        for acc in accounts:
+            if sn_login(session, acc["username"], acc["password"]):
+                logged_in = True
+                break
+    if not logged_in:
+        raise LoginFailed("성남 모든 계정 로그인 실패")
 
     all_available = []
     all_courts    = []
     today         = datetime.now(KST)
+    relogin_used  = False
 
-    for i in range(4):
-        date       = today + timedelta(days=i)
-        date_str   = date.strftime("%Y-%m-%d")
-        is_weekend = date.weekday() >= 5
-        dow        = _DOW_KO[date.weekday()]
-
-        for fac in facilities:
+    for fac in facilities:
+        for i in range(4):
+            date       = today + timedelta(days=i)
+            date_str   = date.strftime("%Y-%m-%d")
+            is_weekend = date.weekday() >= 5
+            dow        = _DOW_KO[date.weekday()]
             time_slots = fac["weekend_times"] if is_weekend else fac["weekday_times"]
             if not time_slots:
                 continue
 
-            html = sn_get_timetable(session, fac["id"], date_str)
-            if html is None:
-                # 세션 만료 → 재로그인
-                session = sn_make_session()
-                for acc in accounts:
-                    if sn_login(session, acc["username"], acc["password"]):
-                        break
+            try:
                 html = sn_get_timetable(session, fac["id"], date_str)
-
-            if not html:
-                logging.warning(f"[SN] 타임테이블 없음: {fac['name']} {date_str}")
-                continue
+            except SessionExpired:
+                if relogin_used:
+                    raise SessionExpired("성남 재로그인 후에도 세션이 만료되어 이번 조회를 중단합니다.")
+                relogin_used = True
+                logging.warning("[SN] 세션 만료 확인 — 이번 조회에서 1회만 재로그인합니다.")
+                if not any(sn_login(session, a["username"], a["password"]) for a in accounts):
+                    raise LoginFailed("성남 세션 복구 실패")
+                html = sn_get_timetable(session, fac["id"], date_str)
 
             avail_slots, all_slot_list = sn_parse_timetable(html)
 
@@ -908,11 +871,12 @@ def _yn_build_msg(courts):
 
 
 def sungnam_loop():
-    global _sn_available, _sn_courts, _sn_last_update
+    global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error
     accounts     = sn_load_accounts()
     facilities   = sn_load_monitoring_table()
     notify_facs  = sn_load_notify_table()
     if not accounts:
+        _sn_status, _sn_error = "error", "auth.txt에 성남 계정이 없습니다."
         logging.error("[SN] auth.txt 없음 – 성남 모니터링 비활성화")
         return
     if not facilities:
@@ -921,21 +885,35 @@ def sungnam_loop():
             facilities = notify_facs
             logging.warning(f"[SN] MonitoringTable 없음 – NotifyTable 시설 스캔: {[f['name'] for f in facilities]}")
         else:
+            _sn_status, _sn_error = "error", "성남 조회 대상 시설 설정이 없습니다."
             logging.error("[SN] NotifyTable.txt 없음 – 성남 모니터링 비활성화")
             return
     if notify_facs:
         logging.info(f"[SN] NotifyTable 로드: {[f['name'] for f in notify_facs]}")
     else:
         logging.warning("[SN] NotifyTable.txt 없음 – 성남 텔레그램 알림 비활성화")
+    session = sn_make_session()
+    try:
+        _sungnam_monitor_loop(session, accounts, facilities, notify_facs)
+    finally:
+        session.close()
+
+
+def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
+    global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error
     sn_prev_key = [""]
     while True:
+        retry_delay = 90
         try:
+            with _lock:
+                _sn_status = "scanning"
             logging.info("[SN] ======= 성남 모니터링 시작 =======")
-            avail, courts = sn_run_once(accounts, facilities)
+            avail, courts = sn_run_once(accounts, facilities, session=session)
             with _lock:
                 _sn_available   = avail
                 _sn_courts      = courts
                 _sn_last_update = datetime.now(KST).isoformat()
+                _sn_status, _sn_error = "ok", ""
             logging.info(f"[SN] 완료: 예약가능 {len(avail)}개 / 전체 {len(courts)}개")
             # 알림 체크: courts 에서 notify 조건 맞는 가용 슬롯 추출
             if notify_facs:
@@ -945,8 +923,14 @@ def sungnam_loop():
                 logging.info(f"[SN] 알림 대상 슬롯: {len(notify_slots)}개")
                 _notify_if_changed("[SN]", notify_slots, sn_prev_key, _sn_build_msg)
         except Exception as e:
+            with _lock:
+                _sn_status = "blocked" if isinstance(e, AccessBlocked) else "error"
+                _sn_error = str(e)
+            if isinstance(e, (AccessBlocked, LoginFailed)):
+                retry_delay = 300
             logging.error(f"[SN] 루프 오류: {e}")
-        time.sleep(90)
+            logging.info("[SN] 이전 수집 결과를 유지합니다. %s초 후 재확인합니다.", retry_delay)
+        session.wait(retry_delay)
 
 
 def yongin_loop():
@@ -1052,6 +1036,7 @@ _TEMPLATE = """<!DOCTYPE html>
       &nbsp;|&nbsp;<span id="periodInfo"></span>
     </div>
     <button class="btn btn-refresh btn-sm mt-2" onclick="doRefresh()">🔄 새로고침</button>
+    <div id="monitorStatus" class="small mt-2" role="status"></div>
   </div>
 
   <!-- ─── 성남 뷰 ─── -->
@@ -1173,6 +1158,16 @@ function sn_refresh() {
   fetch('/api/sungnam').then(function(r){ return r.json(); }).then(function(data) {
     document.getElementById('lastUpdate').textContent = data.last_update || '-';
     document.getElementById('periodInfo').textContent = '오늘 ~ +3일';
+    var status = document.getElementById('monitorStatus');
+    status.textContent = data.error ? '조회 실패: ' + data.error + (data.last_update ? ' (이전 수집 결과 표시 중)' : '')
+      : (data.status === 'ok' ? '정상 수집 완료' : '성남 조회 중…');
+    status.style.color = data.error ? '#ff8a65' : '#aaa';
+    if (!data.last_update) {
+      ['sn-interestDiv','sn-availDiv','sn-tableDiv'].forEach(function(id) {
+        document.getElementById(id).textContent = data.error ? '시간표를 수집하지 못했습니다.' : '첫 시간표 수집을 기다리고 있습니다.';
+      });
+      return;
+    }
     sn_renderInterest(data.available   || []);
     sn_renderAvail(data.all_courts     || []);
     sn_renderTable(data.all_courts     || []);
@@ -1318,6 +1313,7 @@ function yn_refresh() {
     if (el) el.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
   });
   fetch('/api/yongin').then(function(r){ return r.json(); }).then(function(data) {
+    document.getElementById('monitorStatus').textContent = '';
     document.getElementById('lastUpdate').textContent = data.last_update || '-';
     document.getElementById('periodInfo').textContent = data.period || '';
     _yn_avail = data.available  || [];
@@ -1589,6 +1585,8 @@ def api_sungnam():
             "available":   _sn_available,
             "all_courts":  _sn_courts,
             "last_update": _sn_last_update,
+            "status":      _sn_status,
+            "error":       _sn_error,
         })
 
 
@@ -1609,7 +1607,10 @@ def api_yongin():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="성남+용인 테니스 코트 통합 모니터링")
     parser.add_argument("--port", type=int, default=8000, help="Flask 포트 (기본: 8000)")
+    parser.add_argument("--sn-manual-login", action="store_true",
+                        help="성남 Chrome 창을 열고 직접 로그인 (최대 180초 대기)")
     args = parser.parse_args()
+    SN_MANUAL_LOGIN = args.sn_manual_login
 
     setup_logging()
     load_telegram_config()
