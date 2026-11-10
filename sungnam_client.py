@@ -165,12 +165,20 @@ class SungnamClient:
                     "Linux 화면 표시/직접 로그인에는 데스크톱 세션의 DISPLAY 또는 WAYLAND_DISPLAY가 필요합니다. "
                     "화면 없는 서버에서는 직접 로그인/화면 표시 옵션을 빼고 --sn-background로 자동 로그인하세요."
                 )
+            browser_args = ["--window-size=1920,1080"]
+            if sys.platform.startswith("linux"):
+                # 메모리가 작은 서버용: GPU/확장/백그라운드 프로세스와 렌더러 수를 줄인다.
+                browser_args += [
+                    "--disable-gpu", "--disable-extensions", "--disable-background-networking",
+                    "--disable-component-update", "--disable-sync", "--mute-audio",
+                    "--renderer-process-limit=1", "--js-flags=--max-old-space-size=192",
+                ]
             try:
                 config = uc.Config(
                     headless=False, lang="ko-KR", user_data_dir=self.profile,
                     browser_executable_path=(os.path.expanduser(self.browser_executable)
                                              if self.browser_executable else None),
-                    sandbox=True, browser_args=["--window-size=1920,1080"],
+                    sandbox=True, browser_args=browser_args,
                 )
             except FileNotFoundError as exc:
                 raise BrowserLaunchError(
