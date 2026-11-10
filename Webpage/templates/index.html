@@ -107,21 +107,25 @@
   <div id="city-yongin" style="display:none">
     <ul class="nav nav-tabs mb-0 px-1" id="yn-tabRow">
       <li class="nav-item">
-        <button class="nav-link" id="yn-tab-list" onclick="yn_switchTab('list')">📋 목록 뷰</button>
+        <button class="nav-link" id="yn-tab-eve" onclick="yn_switchTab('eve')">📋 목록 뷰(저녁)</button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" id="yn-tab-mor" onclick="yn_switchTab('mor')">📋 목록 뷰(아침)</button>
       </li>
       <li class="nav-item">
         <button class="nav-link active" id="yn-tab-cal" onclick="yn_switchTab('cal')">📅 달력 뷰</button>
       </li>
     </ul>
 
-    <!-- 목록 뷰 -->
-    <div id="yn-view-list" class="card-dark" style="border-radius:0 8px 8px 8px; display:none;">
+    <!-- 목록 뷰(저녁): 시작 18:00 이후 -->
+    <div id="yn-view-eve" class="card-dark" style="border-radius:0 8px 8px 8px; display:none;">
+      <div class="text-muted mb-2" style="font-size:.85rem">시작 시간이 18:00(포함) 이후인 시간대만 표시합니다.</div>
       <div class="top-section">
         <div class="top-section-header" onclick="toggleSection(this)">
           <span>⭐ 예약 가능한 관심 코트</span><span class="toggle-icon">▲</span>
         </div>
         <div class="top-section-content">
-          <div id="yn-interestDiv"><div class="text-center"><div class="spinner-border"></div></div></div>
+          <div id="yn-interestDiv-eve"><div class="text-center"><div class="spinner-border"></div></div></div>
         </div>
       </div>
       <div class="top-section mt-3">
@@ -129,7 +133,7 @@
           <span>✅ 예약 가능한 모든 코트</span><span class="toggle-icon">▼</span>
         </div>
         <div class="top-section-content" style="display:none">
-          <div id="yn-availDiv"></div>
+          <div id="yn-availDiv-eve"></div>
         </div>
       </div>
       <div class="top-section mt-3">
@@ -137,7 +141,36 @@
           <span>📊 전체 코트 현황</span><span class="toggle-icon">▼</span>
         </div>
         <div class="top-section-content" style="display:none">
-          <div id="yn-tableDiv"></div>
+          <div id="yn-tableDiv-eve"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 목록 뷰(아침): 시작 08:00 이전 -->
+    <div id="yn-view-mor" class="card-dark" style="border-radius:0 8px 8px 8px; display:none;">
+      <div class="text-muted mb-2" style="font-size:.85rem">시작 시간이 08:00(포함) 이전인 시간대만 표시합니다.</div>
+      <div class="top-section">
+        <div class="top-section-header" onclick="toggleSection(this)">
+          <span>⭐ 예약 가능한 관심 코트</span><span class="toggle-icon">▲</span>
+        </div>
+        <div class="top-section-content">
+          <div id="yn-interestDiv-mor"><div class="text-center"><div class="spinner-border"></div></div></div>
+        </div>
+      </div>
+      <div class="top-section mt-3">
+        <div class="top-section-header" onclick="toggleSection(this)">
+          <span>✅ 예약 가능한 모든 코트</span><span class="toggle-icon">▼</span>
+        </div>
+        <div class="top-section-content" style="display:none">
+          <div id="yn-availDiv-mor"></div>
+        </div>
+      </div>
+      <div class="top-section mt-3">
+        <div class="top-section-header" onclick="toggleSection(this)">
+          <span>📊 전체 코트 현황</span><span class="toggle-icon">▼</span>
+        </div>
+        <div class="top-section-content" style="display:none">
+          <div id="yn-tableDiv-mor"></div>
         </div>
       </div>
     </div>
@@ -366,17 +399,44 @@ function sn_renderTable(courts) {
 // ══════════════════════════════════════════════════════════
 // 용인 렌더링
 // ══════════════════════════════════════════════════════════
+// 목록 뷰는 시작 시간으로 나눈다: 저녁 = 18:00(포함) 이후, 아침 = 08:00(포함) 이전.
+var YN_LIST_VIEWS = {
+  eve: function(m){ return m >= 18 * 60; },
+  mor: function(m){ return m <= 8 * 60; }
+};
+var YN_VIEW_IDS = ['eve', 'mor', 'cal'];
+
+function yn_startMinutes(slot) {
+  var m = /^\s*(\d{1,2}):(\d{2})/.exec(slot.time || '');
+  return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : null;
+}
+function yn_forView(view, slots) {
+  var match = YN_LIST_VIEWS[view];
+  return slots.filter(function(x) {
+    var minutes = yn_startMinutes(x);
+    return minutes !== null && match(minutes);
+  });
+}
+function yn_listDivIds() {
+  var ids = [];
+  Object.keys(YN_LIST_VIEWS).forEach(function(view) {
+    ids.push('yn-interestDiv-' + view, 'yn-availDiv-' + view, 'yn-tableDiv-' + view);
+  });
+  return ids;
+}
+
 function yn_switchTab(tab) {
   _yn_tab = tab;
-  document.getElementById('yn-view-list').style.display = tab === 'list' ? '' : 'none';
-  document.getElementById('yn-view-cal').style.display  = tab === 'cal'  ? '' : 'none';
-  document.getElementById('yn-tab-list').classList.toggle('active', tab === 'list');
-  document.getElementById('yn-tab-cal').classList.toggle('active',  tab === 'cal');
+  YN_VIEW_IDS.forEach(function(view) {
+    document.getElementById('yn-view-' + view).style.display = view === tab ? '' : 'none';
+    document.getElementById('yn-tab-' + view).classList.toggle('active', view === tab);
+  });
   if (tab === 'cal' && _yn_all.length) yn_renderCal(_yn_all, _yn_area);
 }
 
 function yn_refresh() {
-  ['yn-interestDiv','yn-availDiv','yn-tableDiv','yn-calDiv'].forEach(function(id) {
+  var spinnerIds = yn_listDivIds().concat(['yn-calDiv']);
+  spinnerIds.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
   });
@@ -384,16 +444,18 @@ function yn_refresh() {
     _yn_data = data;
     if (_city === 'yongin') renderStatus();
     if (!data.last_update) {
-      ['yn-interestDiv','yn-availDiv','yn-tableDiv','yn-calDiv'].forEach(function(id) {
+      spinnerIds.forEach(function(id) {
         document.getElementById(id).textContent = data.error ? '시간표를 수집하지 못했습니다.' : '첫 시간표 수집을 기다리고 있습니다.';
       });
       return;
     }
     _yn_avail = data.available  || [];
     _yn_all   = data.all_courts || [];
-    yn_renderInterest(_yn_avail);
-    yn_renderAvail(_yn_all);
-    yn_renderTable(_yn_all);
+    Object.keys(YN_LIST_VIEWS).forEach(function(view) {
+      yn_renderInterest(_yn_avail, view);
+      yn_renderAvail(_yn_all, view);
+      yn_renderTable(_yn_all, view);
+    });
     yn_buildAreaFilter(_yn_all);
     if (_yn_tab === 'cal') yn_renderCal(_yn_all, _yn_area);
   }).catch(function(e){ console.error(e); });
@@ -531,8 +593,9 @@ function yn_renderCal(courts, areaFilter) {
 }
 
 // 1. 예약 가능한 관심 코트 (모니터링 필터 통과 슬롯)
-function yn_renderInterest(avail) {
-  var d = document.getElementById('yn-interestDiv');
+function yn_renderInterest(avail, view) {
+  var d = document.getElementById('yn-interestDiv-' + view);
+  avail = yn_forView(view, avail);
   if (!avail.length) { d.innerHTML = '<div class="text-warning">예약 가능한 관심 코트가 없습니다.</div>'; return; }
   var byDate = {};
   avail.forEach(function(x) {
@@ -560,9 +623,9 @@ function yn_renderInterest(avail) {
 }
 
 // 2. 예약 가능한 모든 코트 (지역별 토글)
-function yn_renderAvail(courts) {
-  var d = document.getElementById('yn-availDiv');
-  var avail = courts.filter(function(x){ return x.is_available; });
+function yn_renderAvail(courts, view) {
+  var d = document.getElementById('yn-availDiv-' + view);
+  var avail = yn_forView(view, courts.filter(function(x){ return x.is_available; }));
   if (!avail.length) { d.innerHTML = '<div class="text-warning">예약 가능한 코트가 없습니다.</div>'; return; }
   var byLoc = {};
   var dowMap = {};
@@ -594,8 +657,9 @@ function yn_renderAvail(courts) {
 }
 
 // 3. 전체 코트 현황 (지역별 토글)
-function yn_renderTable(courts) {
-  var d = document.getElementById('yn-tableDiv');
+function yn_renderTable(courts, view) {
+  var d = document.getElementById('yn-tableDiv-' + view);
+  courts = yn_forView(view, courts);
   if (!courts.length) { d.innerHTML = '<div class="text-muted">데이터 없음</div>'; return; }
   var byLoc = {};
   var dowMap = {};

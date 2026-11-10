@@ -443,6 +443,24 @@ class ScanTests(unittest.TestCase):
 
 
 class CommandLineTests(unittest.TestCase):
+    def test_poll_delay_is_random_between_two_and_five_minutes(self):
+        with patch.object(monitor.random, "randint", return_value=200) as randint:
+            self.assertEqual(monitor.next_poll_delay(), 200)
+        randint.assert_called_once_with(120, 300)
+        delays = {monitor.next_poll_delay() for _ in range(200)}
+        self.assertTrue(all(120 <= delay <= 300 for delay in delays))
+        self.assertGreater(len(delays), 1)
+
+    def test_sungnam_waits_a_random_delay_between_cycles(self):
+        session = Mock(authenticated=False, manual_login=False)
+        session.wait.side_effect = KeyboardInterrupt
+        with patch.object(monitor, "next_poll_delay", return_value=173), \
+             patch.object(monitor, "sn_run_once", return_value=([], [])), \
+             patch.object(monitor, "_sn_begin_cycle"):
+            with self.assertRaises(KeyboardInterrupt):
+                monitor._sungnam_monitor_loop(session, ACCOUNTS, FACILITIES, [])
+        session.wait.assert_called_once_with(173)
+
     def test_default_command_uses_auto_login(self):
         self.assertFalse(monitor.create_argument_parser().parse_args([]).sn_manual_login)
 

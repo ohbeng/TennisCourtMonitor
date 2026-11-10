@@ -61,9 +61,11 @@ class YonginListTests(unittest.TestCase):
              patch.object(monitor, "yn_load_notify_table", return_value={}), \
              patch.object(monitor, "yn_run_once", side_effect=RuntimeError("incomplete court list")), \
              patch.object(monitor, "_notify_if_changed") as notify, \
-             patch.object(monitor.time, "sleep", side_effect=KeyboardInterrupt):
+             patch.object(monitor.time, "sleep", side_effect=KeyboardInterrupt) as sleep:
             with self.assertRaises(KeyboardInterrupt):
                 monitor.yongin_loop()
+            sleep.assert_called_once()
+            self.assertTrue(120 <= sleep.call_args.args[0] <= 300)
             data = monitor.build_yongin_payload()
             self.assertEqual(data["all_courts"], old)
             self.assertEqual(data["last_update"], "last-success")

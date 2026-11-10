@@ -19,6 +19,7 @@ import os
 import re
 import time
 import queue
+import random
 import logging
 import threading
 import argparse
@@ -67,6 +68,13 @@ YN_BASE_URL  = "https://publicsports.yongin.go.kr/publicsports"
 YN_TIME_API  = f"{YN_BASE_URL}/sports/selectRegistTimeByChosenDateFcltyRceptResveApply.do"
 YN_PAGE_SIZE = 8
 YN_WORKERS   = 8
+# 성남·용인 모두 한 번 조회를 마친 뒤 이 범위에서 무작위로 쉬고 다시 조회한다.
+POLL_MIN_SECONDS = 120
+POLL_MAX_SECONDS = 300
+
+
+def next_poll_delay():
+    return random.randint(POLL_MIN_SECONDS, POLL_MAX_SECONDS)
 
 NODRIVER_PROFILE = default_profile_directory(_HERE)
 SN_MANUAL_LOGIN = False
@@ -1000,7 +1008,7 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
     global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error
     sn_prev_key = [""]
     while not _sn_stop_event.is_set():
-        retry_delay = 90
+        retry_delay = next_poll_delay()
         manual_login = getattr(session, "manual_login", False) is True
         try:
             _sn_begin_cycle(facilities)
@@ -1024,6 +1032,7 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
                                 and sn_passes_notify(c, notify_facs)]
                 logging.info(f"[SN] 알림 대상 슬롯: {len(notify_slots)}개")
                 _notify_if_changed("[SN]", notify_slots, sn_prev_key, _sn_build_msg)
+            logging.info("[SN] %s초 후 다시 조회합니다.", retry_delay)
         except Exception as e:
             with _lock:
                 _sn_status = ("blocked" if isinstance(e, AccessBlocked) else
@@ -1089,7 +1098,9 @@ def yongin_loop():
             with _lock:
                 _yn_status, _yn_error = "error", str(e)
             logging.error(f"[YN] 루프 오류: {e}")
-        time.sleep(300)
+        delay = next_poll_delay()
+        logging.info("[YN] %s초 후 다시 조회합니다.", delay)
+        time.sleep(delay)
 
 
 # ─────────────────────────────────────────────────────────
