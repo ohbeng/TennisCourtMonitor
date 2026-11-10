@@ -1041,7 +1041,11 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
                 logging.error("[SN] %s", e)
                 logging.error("[SN] Chrome 시작 재시도를 중단합니다. 용인 모니터링은 계속됩니다.")
                 return
-            if isinstance(e, (AccessBlocked, LoginFailed)):
+            if isinstance(e, AccessBlocked) and not manual_login:
+                # 차단은 시간이 지나면 풀리므로 중단하지 않고 다음 주기에 다시 조회한다.
+                logging.warning("[SN] %s", e)
+                logging.info("[SN] 이전 수집 결과를 유지합니다. %s초 후 다시 조회합니다.", retry_delay)
+            elif isinstance(e, (AccessBlocked, LoginFailed)):
                 if not manual_login:
                     logging.error("[SN] %s", e)
                     logging.error("[SN] 조회를 중단합니다. 이미 읽은 시간표는 웹 화면에 유지합니다. 사이트 안내를 확인하거나 --sn-manual-login으로 실행하세요.")

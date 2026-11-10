@@ -382,21 +382,27 @@ class ScanTests(unittest.TestCase):
         self.session.get_timetable.assert_not_called()
         self.session.close.assert_called_once()
 
-    def test_failed_auto_scan_preserves_results_and_stops_reconnecting(self):
+    def test_blocked_auto_scan_preserves_results_and_retries_next_cycle(self):
         old = [{"court": "previous successful data"}]
         self.session.wait.side_effect = KeyboardInterrupt
         with patch.multiple(monitor, _sn_courts=old, _sn_available=old,
                             _sn_last_update="last-success", _sn_status="ok", _sn_error=""), \
              patch.object(monitor, "sn_run_once", side_effect=AccessBlocked("blocked")), \
              patch.object(monitor, "_notify_if_changed") as notify:
-            monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
+            with self.assertRaises(KeyboardInterrupt):
+                monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
             data = monitor.build_sungnam_payload()
             self.assertEqual(data["all_courts"], old)
             self.assertEqual(data["last_update"], "last-success")
             self.assertEqual(data["status"], "blocked")
             self.assertEqual(data["error"], "blocked")
-            self.session.wait.assert_not_called()
+            self.session.wait.assert_called_once()
             notify.assert_not_called()
+
+    def test_login_failure_stops_reconnecting(self):
+        with patch.object(monitor, "sn_run_once", side_effect=LoginFailed("bad credentials")):
+            monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
+        self.session.wait.assert_not_called()
 
     def test_manual_login_does_not_cycle_through_saved_accounts(self):
         self.session.manual_login = True
