@@ -365,6 +365,21 @@ class SungnamClient:
             await asyncio.sleep(0.5)
         raise SungnamError(f"성남 조회 화면을 기다리는 시간이 초과되었습니다 ({selector}).")
 
+    async def _click(self, selector, *, path=None, element=None):
+        # 페이지가 다시 그려지면 이미 찾은 요소의 DOM 노드가 사라져 click이 실패한다.
+        # 이 경우 요소를 다시 찾아 클릭한다.
+        for attempt in range(5):
+            if element is None:
+                element = await self._wait_element(selector, path=path)
+            try:
+                await element.click()
+                return
+            except Exception as exc:
+                if "Could not find node" not in str(exc) or attempt == 4:
+                    raise
+                element = None
+                await asyncio.sleep(0.5)
+
     async def _open_facility(self, facility_id):
         if getattr(self, "_current_facility", None) == facility_id:
             return
@@ -383,16 +398,14 @@ class SungnamClient:
             if index:
                 self.page = await self.browser.get(f"{BASE_URL}/facilityList.do?facType=29")
                 await self._wait_element(".tennisGroup", path="facilityList.do")
-            element = await self.page.select(f'.tennisGroup[id={json.dumps(group)}]')
-            await element.click()
+            await self._click(f'.tennisGroup[id={json.dumps(group)}]', path="facilityList.do")
             await self._wait_element(".facilityInfo", path="tennisList.do")
             ids = await self._json("JSON.stringify(Array.from(document.querySelectorAll('.facilityInfo')).map(x=>x.id))")
             group_map.update({fac_id: group for fac_id in ids})
             self._facility_groups = group_map
             if facility_id not in ids:
                 continue
-            element = await self.page.select(f'.facilityInfo[id={json.dumps(facility_id)}]')
-            await element.click()
+            await self._click(f'.facilityInfo[id={json.dumps(facility_id)}]', path="tennisList.do")
             await self._wait_element("#move_reservation", path="facilityInfo.do")
             self._current_facility = facility_id
             return
@@ -407,8 +420,7 @@ class SungnamClient:
             wanted = tuple(map(int, date.split("-")[:2]))
             current = tuple(map(int, calendar["first"].split("-")[:2]))
             control = ".ui-datepicker-next" if wanted > current else ".ui-datepicker-prev"
-            element = await self._wait_element(control)
-            await element.click()
+            await self._click(control)
         element = await self._wait_element(f'.spandate[id={json.dumps(date)}]')
         deadline = self.loop.time() + 20
         while self.loop.time() < deadline:
@@ -431,15 +443,14 @@ class SungnamClient:
         self._date_closed = calendar.get("closed") is True
         if calendar.get("enabled") is not True:
             return False
-        await element.click()
+        await self._click(f'.spandate[id={json.dumps(date)}]', element=element)
         selected = await self._json("JSON.stringify(document.querySelector('#resdate')?.value)")
         if selected != date:
             raise SungnamError("성남 달력의 날짜 선택을 확인하지 못했습니다.")
         # 시설 소개 화면에서만 날짜 선택 후 시간표 화면으로 이동한다.
         state = await self._state()
         if "facilityInfo.do" in state.get("url", ""):
-            element = await self._wait_element("#move_reservation")
-            await element.click()
+            await self._click("#move_reservation")
         await self._wait_element("#other_timetable", path="reservationInfo.do")
         return True
 
@@ -448,7 +459,7 @@ class SungnamClient:
         await self.browser.update_targets()
         previous = {tab.target.target_id for tab in self.browser.tabs}
         button = await self.page.select("#other_timetable")
-        await button.click()
+        await self._click("#other_timetable", element=button)
         popup = None
         keep_popup = False
         deadline = self.loop.time() + 30

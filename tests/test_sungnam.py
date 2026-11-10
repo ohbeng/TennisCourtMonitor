@@ -275,6 +275,21 @@ class BrowserTests(unittest.TestCase):
         selectors = [call.args[0] for call in self.client._wait_element.await_args_list]
         self.assertIn(".ui-datepicker-next", selectors)
 
+    def test_click_retries_with_fresh_element_when_node_is_stale(self):
+        stale = Mock(click=AsyncMock(side_effect=Exception("Could not find node with given id [code: -32000]")))
+        fresh = Mock(click=AsyncMock())
+        self.client._wait_element = AsyncMock(return_value=fresh)
+        with patch("sungnam_client.asyncio.sleep", AsyncMock()):
+            self.client._run(self.client._click("#x", element=stale))
+        stale.click.assert_awaited_once()
+        fresh.click.assert_awaited_once()
+        self.client._wait_element.assert_awaited_once_with("#x", path=None)
+
+    def test_click_does_not_retry_other_errors(self):
+        element = Mock(click=AsyncMock(side_effect=Exception("boom")))
+        with self.assertRaisesRegex(Exception, "boom"):
+            self.client._run(self.client._click("#x", element=element))
+
     def test_existing_timetable_popup_is_read_and_closed(self):
         parent = self.client.page
         parent.target.target_id = "parent"
