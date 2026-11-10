@@ -325,7 +325,7 @@ def _sn_scan(session, accounts, facilities, on_result=None):
 
             logging.info(f"[SN] {fac['name']} {date_str}: 예약가능 "
                          f"{sum(1 for s in avail_slots if 'ALL' in time_slots or any(sn_time_match(s['time'], t) for t in time_slots))}개")
-            time.sleep(0.2)
+            time.sleep(0.1)
 
     return all_available, all_courts
 
@@ -684,7 +684,7 @@ def _yn_fetch_courts(sess):
         if len(items) < YN_PAGE_SIZE:
             break
         page_idx += 1
-        time.sleep(0.3)
+        time.sleep(0.1)
 
     tennis_courts = [c for c in courts if "테니스" in c["name"]]
     if courts and not tennis_courts:

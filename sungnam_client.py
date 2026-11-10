@@ -260,7 +260,7 @@ class SungnamClient:
             raise SungnamError("성남 페이지 상태를 확인할 수 없습니다.")
         if "auto_detect.do" in urlsplit(state.get("url", "")).path or state.get("blocked") is True:
             raise AccessBlocked(
-                "성남 사이트가 접근을 차단했습니다. " + (
+                f"성남 사이트가 접근을 차단했습니다 (URL: {state.get('url', '')}). " + (
                     "화면 확인이 필요하면 --sn-show-browser로 실행하세요." if self.background else
                     "열린 Chrome에서 사이트 안내를 확인해 주세요."
                 )
@@ -357,9 +357,11 @@ class SungnamClient:
 
     async def _wait_element(self, selector, *, path=None, timeout=30):
         deadline = self.loop.time() + timeout
+        last_url = None
         while self.loop.time() < deadline:
             try:
                 state = await self._state()
+                last_url = state.get("url")
                 if state.get("login") is True:
                     raise SessionExpired("성남 로그인 세션이 만료되었습니다.")
                 if state.get("ready") is True and (path is None or path in state.get("url", "")):
@@ -371,7 +373,13 @@ class SungnamClient:
             except Exception:
                 pass
             await asyncio.sleep(0.5)
-        raise SungnamError(f"성남 조회 화면을 기다리는 시간이 초과되었습니다 ({selector}).")
+        detail = f"선택자: {selector}, 기대 경로: {path}, 현재 URL: {last_url}"
+        try:
+            body = await self._json("JSON.stringify((document.body ? document.body.innerText : '').replace(/\\s+/g, ' ').slice(0, 200))")
+            detail += f", 화면: {body}"
+        except Exception:
+            pass
+        raise SungnamError(f"성남 조회 화면을 기다리는 시간이 초과되었습니다 ({detail}).")
 
     async def _click(self, selector, *, path=None, element=None):
         # 페이지가 다시 그려지면 이미 찾은 요소의 DOM 노드가 사라져 click이 실패한다.
