@@ -1791,6 +1791,8 @@ def create_argument_parser():
                         help="Chrome/Chromium 실행 경로 (기본: CHROME_BIN 또는 자동 탐색)")
     parser.add_argument("--sn-profile", default=NODRIVER_PROFILE,
                         help="성남 전용 Chrome 프로필 폴더 (기본: 운영체제별 별도 폴더)")
+    parser.add_argument("--no-sungnam", action="store_true",
+                        help="성남 모니터링(Chrome)을 실행하지 않음 (환경변수 SUNGNAM_ENABLED=false와 동일)")
     return parser
 
 
@@ -1818,13 +1820,21 @@ if __name__ == "__main__":
     logging.info("   성남 Chrome: %s", "백그라운드 실행" if SN_BACKGROUND and not SN_MANUAL_LOGIN else "화면 표시")
     logging.info("=" * 60)
 
+    sungnam_enabled = (not args.no_sungnam
+                       and os.environ.get("SUNGNAM_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off"))
+    if not sungnam_enabled:
+        _sn_status, _sn_error = "error", "성남 모니터링이 비활성화되어 있습니다 (--no-sungnam / SUNGNAM_ENABLED=false)."
+        logging.info("   성남 모니터링: 비활성화 (Chrome을 실행하지 않음)")
+
     # 백그라운드 모니터링 스레드 시작
     t_sn = threading.Thread(target=sungnam_loop, daemon=True, name="sungnam")
     t_yn = threading.Thread(target=yongin_loop,  daemon=True, name="yongin")
     try:
-        t_sn.start()
+        if sungnam_enabled:
+            t_sn.start()
         t_yn.start()
         logging.info(f"🌐 통합 웹 UI: http://localhost:{args.port}")
         app.run(host="0.0.0.0", port=args.port, debug=False)
     finally:
-        stop_sungnam(t_sn)
+        if sungnam_enabled:
+            stop_sungnam(t_sn)
