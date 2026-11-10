@@ -107,19 +107,22 @@
   <div id="city-yongin" style="display:none">
     <ul class="nav nav-tabs mb-0 px-1" id="yn-tabRow">
       <li class="nav-item">
-        <button class="nav-link" id="yn-tab-eve" onclick="yn_switchTab('eve')">📋 목록 뷰(저녁)</button>
+        <button class="nav-link" id="yn-tab-eve" onclick="yn_switchTab('eve')">📋 평일저녁</button>
       </li>
       <li class="nav-item">
-        <button class="nav-link" id="yn-tab-mor" onclick="yn_switchTab('mor')">📋 목록 뷰(아침)</button>
+        <button class="nav-link" id="yn-tab-mor" onclick="yn_switchTab('mor')">📋 평일아침</button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link" id="yn-tab-wkd" onclick="yn_switchTab('wkd')">📋 주말</button>
       </li>
       <li class="nav-item">
         <button class="nav-link active" id="yn-tab-cal" onclick="yn_switchTab('cal')">📅 달력 뷰</button>
       </li>
     </ul>
 
-    <!-- 목록 뷰(저녁): 시작 18:00 이후 -->
+    <!-- 평일저녁: 평일, 시작 18:00 이후 -->
     <div id="yn-view-eve" class="card-dark" style="border-radius:0 8px 8px 8px; display:none;">
-      <div class="text-muted mb-2" style="font-size:.85rem">시작 시간이 18:00(포함) 이후인 시간대만 표시합니다.</div>
+      <div class="text-muted mb-2" style="font-size:.85rem">평일 중 시작 시간이 18:00(포함) 이후인 시간대만 표시합니다.</div>
       <div class="top-section">
         <div class="top-section-header" onclick="toggleSection(this)">
           <span>⭐ 예약 가능한 관심 코트</span><span class="toggle-icon">▲</span>
@@ -146,9 +149,9 @@
       </div>
     </div>
 
-    <!-- 목록 뷰(아침): 시작 08:00 이전 -->
+    <!-- 평일아침: 평일, 시작 08:00 이전 -->
     <div id="yn-view-mor" class="card-dark" style="border-radius:0 8px 8px 8px; display:none;">
-      <div class="text-muted mb-2" style="font-size:.85rem">시작 시간이 08:00(포함) 이전인 시간대만 표시합니다.</div>
+      <div class="text-muted mb-2" style="font-size:.85rem">평일 중 시작 시간이 08:00(포함) 이전인 시간대만 표시합니다.</div>
       <div class="top-section">
         <div class="top-section-header" onclick="toggleSection(this)">
           <span>⭐ 예약 가능한 관심 코트</span><span class="toggle-icon">▲</span>
@@ -173,6 +176,12 @@
           <div id="yn-tableDiv-mor"></div>
         </div>
       </div>
+    </div>
+
+    <!-- 주말: 토·일 예약 가능한 모든 시간 -->
+    <div id="yn-view-wkd" class="card-dark" style="border-radius:0 8px 8px 8px; display:none;">
+      <div class="text-muted mb-2" style="font-size:.85rem">토·일요일 중 예약 가능한 모든 시간대만 표시합니다.</div>
+      <div id="yn-availDiv-wkd"><div class="text-center"><div class="spinner-border"></div></div></div>
     </div>
 
     <!-- 달력 뷰 -->
@@ -399,28 +408,34 @@ function sn_renderTable(courts) {
 // ══════════════════════════════════════════════════════════
 // 용인 렌더링
 // ══════════════════════════════════════════════════════════
-// 목록 뷰는 시작 시간으로 나눈다: 저녁 = 18:00(포함) 이후, 아침 = 08:00(포함) 이전.
+// 목록 뷰: 평일저녁(평일, 시작 18:00 이후) / 평일아침(평일, 시작 08:00 이전) / 주말(토·일, 예약 가능만).
+function yn_isWeekend(slot) {
+  return slot.day_of_week === '토요일' || slot.day_of_week === '일요일';
+}
 var YN_LIST_VIEWS = {
-  eve: function(m){ return m >= 18 * 60; },
-  mor: function(m){ return m <= 8 * 60; }
+  eve: {sections: ['interest', 'avail', 'table'],
+        match: function(x, m){ return !yn_isWeekend(x) && m !== null && m >= 18 * 60; }},
+  mor: {sections: ['interest', 'avail', 'table'],
+        match: function(x, m){ return !yn_isWeekend(x) && m !== null && m <= 8 * 60; }},
+  wkd: {sections: ['avail'],
+        match: function(x, m){ return yn_isWeekend(x); }}
 };
-var YN_VIEW_IDS = ['eve', 'mor', 'cal'];
+var YN_VIEW_IDS = ['eve', 'mor', 'wkd', 'cal'];
 
 function yn_startMinutes(slot) {
   var m = /^\s*(\d{1,2}):(\d{2})/.exec(slot.time || '');
   return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : null;
 }
 function yn_forView(view, slots) {
-  var match = YN_LIST_VIEWS[view];
-  return slots.filter(function(x) {
-    var minutes = yn_startMinutes(x);
-    return minutes !== null && match(minutes);
-  });
+  var match = YN_LIST_VIEWS[view].match;
+  return slots.filter(function(x){ return match(x, yn_startMinutes(x)); });
 }
 function yn_listDivIds() {
   var ids = [];
   Object.keys(YN_LIST_VIEWS).forEach(function(view) {
-    ids.push('yn-interestDiv-' + view, 'yn-availDiv-' + view, 'yn-tableDiv-' + view);
+    YN_LIST_VIEWS[view].sections.forEach(function(section) {
+      ids.push('yn-' + section + 'Div-' + view);
+    });
   });
   return ids;
 }
@@ -452,9 +467,10 @@ function yn_refresh() {
     _yn_avail = data.available  || [];
     _yn_all   = data.all_courts || [];
     Object.keys(YN_LIST_VIEWS).forEach(function(view) {
-      yn_renderInterest(_yn_avail, view);
-      yn_renderAvail(_yn_all, view);
-      yn_renderTable(_yn_all, view);
+      var sections = YN_LIST_VIEWS[view].sections;
+      if (sections.indexOf('interest') >= 0) yn_renderInterest(_yn_avail, view);
+      if (sections.indexOf('avail') >= 0) yn_renderAvail(_yn_all, view);
+      if (sections.indexOf('table') >= 0) yn_renderTable(_yn_all, view);
     });
     yn_buildAreaFilter(_yn_all);
     if (_yn_tab === 'cal') yn_renderCal(_yn_all, _yn_area);
