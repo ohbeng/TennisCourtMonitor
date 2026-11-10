@@ -72,7 +72,6 @@ YN_WORKERS   = 8
 POLL_MIN_SECONDS = 400
 POLL_MAX_SECONDS = 800
 
-
 def next_poll_delay():
     return random.randint(POLL_MIN_SECONDS, POLL_MAX_SECONDS)
 
