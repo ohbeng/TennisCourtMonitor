@@ -64,7 +64,7 @@ class YonginListTests(unittest.TestCase):
              patch.object(monitor.time, "sleep", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 monitor.yongin_loop()
-            data = monitor.app.test_client().get("/api/yongin").get_json()
+            data = monitor.build_yongin_payload()
             self.assertEqual(data["all_courts"], old)
             self.assertEqual(data["last_update"], "last-success")
             self.assertEqual(data["status"], "error")

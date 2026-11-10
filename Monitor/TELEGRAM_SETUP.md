@@ -3,7 +3,7 @@
 1. 텔레그램의 [@BotFather](https://t.me/BotFather)에서 `/newbot`으로 봇을 생성하고 토큰을 받습니다.
 2. 생성한 봇과 대화를 시작하고 메시지를 보냅니다.
 3. `https://api.telegram.org/bot<봇토큰>/getUpdates` 응답의 `message.chat.id`를 확인합니다.
-4. 프로젝트의 `auth.txt`에 다음 항목을 설정합니다.
+4. `Monitor/auth.txt`에 다음 항목을 설정합니다.
 
 ```ini
 [Telegram]

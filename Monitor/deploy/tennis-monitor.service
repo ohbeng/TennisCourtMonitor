@@ -1,0 +1,20 @@
+[Unit]
+Description=Tennis Court Monitor (Sungnam + Yongin)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# 아래 경로와 사용자는 환경에 맞게 바꾸세요. root가 아닌 일반 사용자로 실행해야 합니다.
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/TennisCourtMonitor/Monitor
+EnvironmentFile=/etc/tennis-monitor.env
+ExecStart=/home/YOUR_USER/TennisCourtMonitor/Monitor/.venv/bin/python tennis_court_monitor_all.py
+Restart=on-failure
+RestartSec=30
+# 종료 시 Chrome/Xvfb까지 정리할 시간을 준다.
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

@@ -24,7 +24,6 @@ class PartialSungnamTests(unittest.TestCase):
         self.sleep.start()
         self.session = Mock(authenticated=False, manual_login=False)
         self.session.login.return_value = True
-        self.api = monitor.app.test_client()
         self.today = monitor.datetime.now(monitor.KST).strftime("%Y-%m-%d")
 
     def tearDown(self):
@@ -32,7 +31,7 @@ class PartialSungnamTests(unittest.TestCase):
         self.state.stop()
 
     def data(self):
-        return self.api.get("/api/sungnam").get_json()
+        return monitor.build_sungnam_payload()
 
     def row(self, facility_id, time):
         facility = next(f for f in FACILITIES if f["id"] == facility_id)

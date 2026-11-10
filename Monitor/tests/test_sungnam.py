@@ -390,7 +390,7 @@ class ScanTests(unittest.TestCase):
              patch.object(monitor, "sn_run_once", side_effect=AccessBlocked("blocked")), \
              patch.object(monitor, "_notify_if_changed") as notify:
             monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
-            data = monitor.app.test_client().get("/api/sungnam").get_json()
+            data = monitor.build_sungnam_payload()
             self.assertEqual(data["all_courts"], old)
             self.assertEqual(data["last_update"], "last-success")
             self.assertEqual(data["status"], "blocked")
@@ -434,7 +434,7 @@ class ScanTests(unittest.TestCase):
              patch.object(monitor, "_notify_if_changed") as notify:
             with self.assertRaises(KeyboardInterrupt):
                 monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
-            data = monitor.app.test_client().get("/api/sungnam").get_json()
+            data = monitor.build_sungnam_payload()
             self.assertEqual(data["status"], "waiting_login")
             self.assertEqual(data["all_courts"], old)
             self.assertEqual(data["last_update"], "last-success")

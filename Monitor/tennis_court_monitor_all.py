@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-성남 + 용인 테니스 코트 예약 현황 통합 모니터링
-  python tennis_court_monitor_all.py [--port 8000]
+성남 + 용인 테니스 코트 예약 현황 모니터 (Linux 서비스용)
+  python tennis_court_monitor_all.py [--webpage-url https://...onrender.com]
+
+수집한 결과는 Webpage 서비스(Render)로 전송하고, 알림은 텔레그램으로 보낸다.
+이 프로그램은 웹 서버를 열지 않는다.
 """
 
 import sys
@@ -29,11 +32,11 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify
 
 import urllib3
 import urllib.request
 from browser_background import default_profile_directory, supports_background
+from web_publisher import WebPublisher
 from sungnam_client import (
     SungnamClient, BrowserLaunchError, AccessBlocked, LoginFailed, ManualLoginRequired, SessionExpired,
     parse_timetable as sn_parse_timetable,
@@ -70,9 +73,8 @@ SN_MANUAL_LOGIN = False
 SN_BACKGROUND = supports_background()
 SN_BROWSER_EXECUTABLE = os.environ.get("CHROME_BIN")
 # ─────────────────────────────────────────────────────────
-# Flask 앱 & 공유 상태
+# 공유 상태 (수집 스레드가 쓰고, 웹 전송 스레드가 읽는다)
 # ─────────────────────────────────────────────────────────
-app   = Flask(__name__)
 _lock = threading.Lock()
 _sn_stop_event = threading.Event()
 _sn_client = None
@@ -1091,661 +1093,11 @@ def yongin_loop():
 
 
 # ─────────────────────────────────────────────────────────
-# HTML 템플릿
+# 웹페이지 전송용 스냅샷
 # ─────────────────────────────────────────────────────────
-_TEMPLATE = """<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <title>테니스 코트 예약 현황</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <style>
-    body { background:#1a1a1a; color:#e0e0e0; font-family:Arial,sans-serif; padding:20px; }
-    .card-dark { background:#2d2d2d; border:none; border-radius:8px; margin-bottom:20px; padding:20px; }
-    .card-dark h5 { color:#fff; border-bottom:2px solid #4CAF50; padding-bottom:8px; margin-bottom:16px; }
-    .available { color:#4CAF50; font-weight:600; }
-    .unavail   { color:#f44336; }
-    table { color:#e0e0e0; }
-    th    { background:#363636 !important; color:#fff !important; border-color:#555 !important; }
-    td    { border-color:#444 !important; }
-    .btn-refresh { background:#4CAF50; border:none; color:#fff; }
-    .btn-refresh:hover { background:#43a047; color:#fff; }
-    .btn-city { border:2px solid #555; background:#363636; color:#ccc; padding:8px 24px; font-size:1rem; }
-    .btn-city.active { background:#4CAF50; color:#fff; border-color:#4CAF50; }
-    .btn-view { border:1px solid #555; background:#363636; color:#ccc; }
-    .btn-view.active { background:#4CAF50; color:#fff; border-color:#4CAF50; }
-    .spinner-border { color:#4CAF50; }
-    .text-muted { color:#888 !important; }
-    /* Yongin Calendar */
-    .cal-wrap { overflow-x:auto; }
-    .cal-table { border-collapse:collapse; min-width:100%; }
-    .cal-table th, .cal-table td { border:1px solid #444; padding:4px 6px; white-space:nowrap; font-size:0.8rem; vertical-align:top; }
-    .cal-table .col-court { background:#363636; color:#ddd; min-width:80px; max-width:100px; white-space:normal; word-break:keep-all; position:sticky; left:0; z-index:1; }
-    .cal-table .col-date  { background:#2a2a2a; text-align:center; min-width:72px; }
-    .cal-table .col-date.weekend { color:#ff8a65; }
-    .cal-table .col-date.today   { background:#1b3a1b; color:#4CAF50; font-weight:bold; }
-    .slot-avail { background:#1b3a1b; color:#4CAF50; border-radius:3px; padding:1px 4px; margin:1px 0; display:block; font-size:0.75rem; }
-    .slot-taken { background:#3a1b1b; color:#888; border-radius:3px; padding:1px 4px; margin:1px 0; display:block; font-size:0.75rem; }
-    .no-slot    { color:#555; font-size:0.75rem; }
-    .nav-tabs .nav-link { color:#aaa; border-color:#555 #555 #2d2d2d; }
-    .nav-tabs .nav-link.active { background:#2d2d2d; color:#4CAF50; border-color:#555 #555 #2d2d2d; }
-    .nav-tabs { border-bottom-color:#555; }
-    /* Sungnam */
-    .sn-date-header { font-size:1rem; color:#4CAF50; border-bottom:1px solid #444; padding:4px 0; margin:12px 0 6px; }
-    .sn-facility { font-weight:bold; margin:8px 0 2px; }
-    .sn-slot { margin-left:16px; color:#4CAF50; }
-    .facility-section { margin-bottom:16px; }
-    .facility-header { background:#363636; padding:10px 14px; cursor:pointer; border-radius:4px; display:flex; justify-content:space-between; align-items:center; color:#fff; }
-    .facility-header:hover { background:#404040; }
-    .date-section { margin:8px 0; }
-    .date-header { background:#404040; padding:7px 12px; cursor:pointer; border-radius:4px; display:flex; justify-content:space-between; align-items:center; color:#ddd; }
-    .date-header:hover { background:#4a4a4a; }
-    .facility-content, .date-content { padding:10px; background:#363636; border-radius:0 0 4px 4px; }
-    .toggle-icon { font-size:12px; color:#888; }
-    .status-available { color:#4CAF50; font-weight:bold; }
-    .status-reserved  { color:#f44336; }
-    .top-section-header { background:#3a3a3a; padding:10px 16px; cursor:pointer; border-radius:6px; display:flex; justify-content:space-between; align-items:center; color:#fff; font-weight:bold; margin-bottom:4px; }
-    .top-section-header:hover { background:#484848; }
-    .top-section-content { padding:8px 2px; }
-  </style>
-</head>
-<body>
-<div class="container-fluid" style="max-width:1400px">
-
-  <!-- 헤더 -->
-  <div class="card-dark text-center">
-    <h2 class="mb-2">🎾 테니스 코트 예약 현황</h2>
-    <div class="d-flex justify-content-center gap-2 mb-3">
-      <button class="btn btn-city active" id="btn-sungnam" onclick="switchCity('sungnam')">🏙 성남</button>
-      <button class="btn btn-city"        id="btn-yongin"  onclick="switchCity('yongin')">🏙 용인</button>
-    </div>
-    <div class="text-muted small">
-      마지막 갱신: <span id="lastUpdate">-</span>
-      &nbsp;|&nbsp;<span id="periodInfo"></span>
-    </div>
-    <button class="btn btn-refresh btn-sm mt-2" onclick="doRefresh()">🔄 새로고침</button>
-    <div id="monitorStatus" class="small mt-2" role="status"></div>
-  </div>
-
-  <!-- ─── 성남 뷰 ─── -->
-  <div id="city-sungnam">
-    <div class="card-dark">
-      <div class="top-section">
-        <div class="top-section-header" onclick="toggleSection(this)">
-          <span>⭐ 예약 가능한 관심 코트</span><span class="toggle-icon">▲</span>
-        </div>
-        <div class="top-section-content">
-          <div id="sn-interestDiv"><div class="text-center"><div class="spinner-border"></div></div></div>
-        </div>
-      </div>
-      <div class="top-section mt-3">
-        <div class="top-section-header" onclick="toggleSection(this)">
-          <span>✅ 예약 가능한 모든 코트</span><span class="toggle-icon">▼</span>
-        </div>
-        <div class="top-section-content" style="display:none">
-          <div id="sn-availDiv"></div>
-        </div>
-      </div>
-      <div class="top-section mt-3">
-        <div class="top-section-header" onclick="toggleSection(this)">
-          <span>📊 전체 코트 현황</span><span class="toggle-icon">▼</span>
-        </div>
-        <div class="top-section-content" style="display:none">
-          <div id="sn-tableDiv"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ─── 용인 뷰 ─── -->
-  <div id="city-yongin" style="display:none">
-    <ul class="nav nav-tabs mb-0 px-1" id="yn-tabRow">
-      <li class="nav-item">
-        <button class="nav-link" id="yn-tab-list" onclick="yn_switchTab('list')">📋 목록 뷰</button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link active" id="yn-tab-cal" onclick="yn_switchTab('cal')">📅 달력 뷰</button>
-      </li>
-    </ul>
-
-    <!-- 목록 뷰 -->
-    <div id="yn-view-list" class="card-dark" style="border-radius:0 8px 8px 8px; display:none;">
-      <div class="top-section">
-        <div class="top-section-header" onclick="toggleSection(this)">
-          <span>⭐ 예약 가능한 관심 코트</span><span class="toggle-icon">▲</span>
-        </div>
-        <div class="top-section-content">
-          <div id="yn-interestDiv"><div class="text-center"><div class="spinner-border"></div></div></div>
-        </div>
-      </div>
-      <div class="top-section mt-3">
-        <div class="top-section-header" onclick="toggleSection(this)">
-          <span>✅ 예약 가능한 모든 코트</span><span class="toggle-icon">▼</span>
-        </div>
-        <div class="top-section-content" style="display:none">
-          <div id="yn-availDiv"></div>
-        </div>
-      </div>
-      <div class="top-section mt-3">
-        <div class="top-section-header" onclick="toggleSection(this)">
-          <span>📊 전체 코트 현황</span><span class="toggle-icon">▼</span>
-        </div>
-        <div class="top-section-content" style="display:none">
-          <div id="yn-tableDiv"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 달력 뷰 -->
-    <div id="yn-view-cal" class="card-dark" style="border-radius:0 8px 8px 8px;">
-      <h5>📅 달력 뷰 <small class="text-muted fs-6">(초록=예약가능, 빨강=마감)</small></h5>
-      <div class="d-flex gap-2 mb-2">
-        <button class="btn btn-sm btn-view" id="yn-calmode-all" onclick="yn_setCalMode('all')">전체</button>
-        <button class="btn btn-sm btn-view active" id="yn-calmode-avail" onclick="yn_setCalMode('avail')">예약가능</button>
-      </div>
-      <div id="yn-areaFilter" class="mb-3 d-flex flex-wrap gap-2"></div>
-      <div class="cal-wrap">
-        <div id="yn-calDiv"><div class="text-center"><div class="spinner-border"></div></div></div>
-      </div>
-    </div>
-  </div>
-
-</div><!-- /container -->
-
-<script>
-// ─── 공통 상태 ────────────────────────────────────────────
-var _city       = 'sungnam';
-var _sn_data    = null;
-var _yn_data    = null;
-var _yn_tab     = 'cal';
-var _yn_area    = null;
-var _yn_cal_mode = 'avail';
-var _yn_all     = [];
-var _yn_avail   = [];
-
-// ─── 도시 전환 ───────────────────────────────────────────
-function switchCity(city) {
-  _city = city;
-  document.getElementById('city-sungnam').style.display = city === 'sungnam' ? '' : 'none';
-  document.getElementById('city-yongin').style.display  = city === 'yongin'  ? '' : 'none';
-  document.getElementById('btn-sungnam').classList.toggle('active', city === 'sungnam');
-  document.getElementById('btn-yongin').classList.toggle('active',  city === 'yongin');
-  renderStatus();
-}
-
-function doRefresh() {
-  if (_city === 'sungnam') sn_refresh();
-  else yn_refresh();
-}
-
-function renderStatus() {
-  var data = _city === 'sungnam' ? _sn_data : _yn_data;
-  document.getElementById('lastUpdate').textContent = data && data.last_update || '-';
-  document.getElementById('periodInfo').textContent = _city === 'sungnam' ? '오늘 ~ +3일' : (data && data.period || '');
-  var status = document.getElementById('monitorStatus');
-  status.style.color = data && data.error ? '#ff8a65' : '#aaa';
-  if (!data) {
-    status.textContent = '첫 시간표를 불러오는 중…';
-    return;
-  }
-  if (_city === 'yongin') {
-    status.textContent = data.error ? '조회 실패: ' + data.error + (data.last_update ? ' (이전 수집 결과 표시 중)' : '')
-      : (data.status === 'ok' ? '정상 수집 완료' : '용인 조회 중…');
-    return;
-  }
-  var progress = data.progress || {};
-  var coverage = data.coverage || [];
-  var missing = coverage.filter(function(x){ return x.status === 'missing'; }).length;
-  var previous = coverage.filter(function(x){ return x.status === 'previous'; }).length;
-  var partial = progress.total > 0 && progress.completed < progress.total;
-  var parts = [];
-  if (data.error) {
-    parts.push((partial && data.last_update ? '일부 수집 · ' : '')
-      + (data.status === 'waiting_login' ? '로그인 대기: ' : '조회 중단: ') + data.error);
-  } else {
-    parts.push(data.status === 'ok' ? '정상 수집 완료' : '성남 수집 중…');
-  }
-  if (progress.total) parts.push('확인 완료 ' + progress.completed + '/' + progress.total + ' (시설·날짜)');
-  if (missing) parts.push('미수집 ' + missing + '건');
-  if (previous) parts.push('이전 조회 ' + previous + '건 포함');
-  status.textContent = parts.join(' | ');
-}
-
-// ══════════════════════════════════════════════════════════
-// 성남 렌더링
-// ══════════════════════════════════════════════════════════
-function sn_refresh() {
-  ['sn-interestDiv','sn-availDiv','sn-tableDiv'].forEach(function(id) {
-    document.getElementById(id).innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
-  });
-  fetch('/api/sungnam', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(data) {
-    _sn_data = data;
-    if (_city === 'sungnam') renderStatus();
-    if (!data.last_update) {
-      ['sn-interestDiv','sn-availDiv','sn-tableDiv'].forEach(function(id) {
-        document.getElementById(id).textContent = data.error ? '시간표를 수집하지 못했습니다.' : '첫 시간표 수집을 기다리고 있습니다.';
-      });
-      return;
-    }
-    sn_renderInterest(data.available   || []);
-    sn_renderAvail(data.all_courts     || []);
-    sn_renderTable(data.all_courts     || []);
-  }).catch(function(e){ console.error(e); });
-}
-
-function toggleSection(el) {
-  var content = el.nextElementSibling;
-  var icon    = el.querySelector('.toggle-icon');
-  if (content.style.display === 'none') {
-    content.style.display = 'block'; icon.textContent = '▲';
-  } else {
-    content.style.display = 'none';  icon.textContent = '▼';
-  }
-}
-
-// 1. 예약 가능한 관심 코트 (모니터링 시간대 매칭)
-function sn_dowShort(dow) {
-  var map = {'월요일':'월','화요일':'화','수요일':'수','목요일':'목','금요일':'금','토요일':'토','일요일':'일'};
-  return map[dow] || dow;
-}
-function sn_previousBadge(slot) {
-  return slot.is_previous ? ' <small class="text-warning">(이전 조회)</small>' : '';
-}
-function sn_renderInterest(avail) {
-  var d = document.getElementById('sn-interestDiv');
-  if (!avail.length) { d.innerHTML = '<div class="text-warning">수집된 시간표에 예약 가능한 관심 코트가 없습니다.</div>'; return; }
-  var byDate = {};
-  var dowMap = {};
-  avail.forEach(function(x) {
-    dowMap[x.date] = x.day_of_week;
-    if (!byDate[x.date]) byDate[x.date] = {};
-    if (!byDate[x.date][x.facility_name]) byDate[x.date][x.facility_name] = [];
-    byDate[x.date][x.facility_name].push(x);
-  });
-  var html = '';
-  Object.keys(byDate).sort().forEach(function(dt) {
-    var dow = sn_dowShort(dowMap[dt] || '');
-    html += '<div class="sn-date-header">📅 ' + dt + '(' + dow + ')</div><div class="ms-2 mb-3">';
-    Object.keys(byDate[dt]).sort().forEach(function(fn) {
-      html += '<div class="sn-facility">🏟 ' + fn + '</div>';
-      byDate[dt][fn].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
-        html += '<div class="sn-slot">✓ ' + s.court + ' &nbsp; ' + s.time + sn_previousBadge(s) + '</div>';
-      });
-    });
-    html += '</div>';
-  });
-  d.innerHTML = html;
-}
-
-// 2. 예약 가능한 모든 코트 (시설별 토글)
-function sn_renderAvail(courts) {
-  var d = document.getElementById('sn-availDiv');
-  var avail = courts.filter(function(x){ return x.is_available; });
-  if (!avail.length) { d.innerHTML = '<div class="text-warning">수집된 시간표에 예약 가능한 코트가 없습니다.</div>'; return; }
-  var byFac = {};
-  var dowMap = {};
-  avail.forEach(function(x) {
-    dowMap[x.date] = x.day_of_week;
-    if (!byFac[x.facility_name]) byFac[x.facility_name] = {};
-    if (!byFac[x.facility_name][x.date]) byFac[x.facility_name][x.date] = [];
-    byFac[x.facility_name][x.date].push(x);
-  });
-  var html = '';
-  // 탄천실내 제일 위
-  var facs = Object.keys(byFac).sort(function(a,b){
-    if (a === '탄천실내') return -1; if (b === '탄천실내') return 1;
-    return a.localeCompare(b, 'ko');
-  });
-  facs.forEach(function(fn) {
-    html += '<div class="facility-section"><div class="facility-header" onclick="toggleSection(this)">'
-          + '<span>' + fn + '</span><span class="toggle-icon">▲</span></div>'
-          + '<div class="facility-content">';
-    Object.keys(byFac[fn]).sort().forEach(function(dt) {
-      var dow = sn_dowShort(dowMap[dt] || '');
-      html += '<div class="date-section"><div class="date-header" onclick="toggleSection(this)">'
-            + '<span>' + dt + '(' + dow + ')</span><span class="toggle-icon">▲</span></div>'
-            + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
-            + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
-      byFac[fn][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
-        html += '<tr><td>' + s.court + '</td><td>' + s.time + sn_previousBadge(s) + '</td><td class="status-available">예약 가능</td></tr>';
-      });
-      html += '</tbody></table></div></div>';
-    });
-    html += '</div></div>';
-  });
-  d.innerHTML = html;
-}
-
-// 3. 전체 코트 현황 (시설별 토글, 상태 포함)
-function sn_renderTable(courts) {
-  var d = document.getElementById('sn-tableDiv');
-  if (!courts.length) { d.innerHTML = '<div class="text-muted">데이터 없음</div>'; return; }
-  var byFac = {};
-  var dowMap = {};
-  courts.forEach(function(x) {
-    dowMap[x.date] = x.day_of_week;
-    if (!byFac[x.facility_name]) byFac[x.facility_name] = {};
-    if (!byFac[x.facility_name][x.date]) byFac[x.facility_name][x.date] = [];
-    byFac[x.facility_name][x.date].push(x);
-  });
-  var html = '';
-  var facs = Object.keys(byFac).sort(function(a,b){
-    if (a === '탄천실내') return -1; if (b === '탄천실내') return 1;
-    return a.localeCompare(b, 'ko');
-  });
-  facs.forEach(function(fn) {
-    html += '<div class="facility-section"><div class="facility-header" onclick="toggleSection(this)">'
-          + '<span>' + fn + '</span><span class="toggle-icon">▲</span></div>'
-          + '<div class="facility-content">';
-    Object.keys(byFac[fn]).sort().forEach(function(dt) {
-      var dow = sn_dowShort(dowMap[dt] || '');
-      html += '<div class="date-section"><div class="date-header" onclick="toggleSection(this)">'
-            + '<span>' + dt + '(' + dow + ')</span><span class="toggle-icon">▲</span></div>'
-            + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
-            + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
-      byFac[fn][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
-        var statusCls  = s.is_available ? 'status-available' : 'status-reserved';
-        var statusText = s.is_available ? '예약 가능'
-                       : (s.reservation_name ? s.reservation_name + ' 님 예약' : '예약됨');
-        html += '<tr><td>' + s.court + '</td><td>' + s.time + sn_previousBadge(s)
-              + '</td><td class="' + statusCls + '">' + statusText + '</td></tr>';
-      });
-      html += '</tbody></table></div></div>';
-    });
-    html += '</div></div>';
-  });
-  d.innerHTML = html;
-}
-
-// ══════════════════════════════════════════════════════════
-// 용인 렌더링
-// ══════════════════════════════════════════════════════════
-function yn_switchTab(tab) {
-  _yn_tab = tab;
-  document.getElementById('yn-view-list').style.display = tab === 'list' ? '' : 'none';
-  document.getElementById('yn-view-cal').style.display  = tab === 'cal'  ? '' : 'none';
-  document.getElementById('yn-tab-list').classList.toggle('active', tab === 'list');
-  document.getElementById('yn-tab-cal').classList.toggle('active',  tab === 'cal');
-  if (tab === 'cal' && _yn_all.length) yn_renderCal(_yn_all, _yn_area);
-}
-
-function yn_refresh() {
-  ['yn-interestDiv','yn-availDiv','yn-tableDiv','yn-calDiv'].forEach(function(id) {
-    var el = document.getElementById(id);
-    if (el) el.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
-  });
-  fetch('/api/yongin', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(data) {
-    _yn_data = data;
-    if (_city === 'yongin') renderStatus();
-    if (!data.last_update) {
-      ['yn-interestDiv','yn-availDiv','yn-tableDiv','yn-calDiv'].forEach(function(id) {
-        document.getElementById(id).textContent = data.error ? '시간표를 수집하지 못했습니다.' : '첫 시간표 수집을 기다리고 있습니다.';
-      });
-      return;
-    }
-    _yn_avail = data.available  || [];
-    _yn_all   = data.all_courts || [];
-    yn_renderInterest(_yn_avail);
-    yn_renderAvail(_yn_all);
-    yn_renderTable(_yn_all);
-    yn_buildAreaFilter(_yn_all);
-    if (_yn_tab === 'cal') yn_renderCal(_yn_all, _yn_area);
-  }).catch(function(e){ console.error(e); });
-}
-
-function yn_shortName(n) {
-  return n.replace(/\\[유료\\]|\\[무료\\]/g,'').replace(/_\\d{2}월$/,'').trim();
-}
-function yn_calName(n) {
-  var clean = n.replace(/\\[유료\\]|\\[무료\\]/g,'').replace(/_\\d{2}월$/,'').trim();
-  var idx = clean.indexOf('테니스장');
-  if (idx < 0) return clean;
-  var main = clean.slice(0, idx).trim();
-  var suffix = clean.slice(idx + 4).trim();
-  if (!suffix) return main;
-  return main + '<br><small>' + suffix + '</small>';
-}
-
-function yn_buildAreaFilter(courts) {
-  var areas = [];
-  courts.forEach(function(x){ if (areas.indexOf(x.location) < 0) areas.push(x.location); });
-  areas.sort();
-  var wrap = document.getElementById('yn-areaFilter');
-  wrap.innerHTML = '';
-  var allBtn = document.createElement('button');
-  allBtn.className = 'btn btn-sm ' + (!_yn_area ? 'btn-view active' : 'btn-view');
-  allBtn.textContent = '전체';
-  allBtn.onclick = function(){ yn_setArea(null); };
-  wrap.appendChild(allBtn);
-  areas.forEach(function(a) {
-    var btn = document.createElement('button');
-    btn.className = 'btn btn-sm ' + (_yn_area === a ? 'btn-view active' : 'btn-view');
-    btn.textContent = a;
-    btn.onclick = (function(area){ return function(){ yn_setArea(area); }; })(a);
-    wrap.appendChild(btn);
-  });
-}
-
-function yn_setArea(a) {
-  _yn_area = a;
-  yn_buildAreaFilter(_yn_all);
-  yn_renderCal(_yn_all, a);
-}
-
-function yn_setCalMode(mode) {
-  _yn_cal_mode = mode;
-  document.getElementById('yn-calmode-all').classList.toggle('active', mode === 'all');
-  document.getElementById('yn-calmode-avail').classList.toggle('active', mode === 'avail');
-  yn_renderCal(_yn_all, _yn_area);
-}
-
-function yn_renderCal(courts, areaFilter) {
-  var d = document.getElementById('yn-calDiv');
-  if (!courts.length) { d.innerHTML = '<div class="text-muted">데이터 없음</div>'; return; }
-
-  var availOnly = (_yn_cal_mode === 'avail');
-
-  var dateSet = {};
-  courts.forEach(function(x){ dateSet[x.date] = x.day_of_week; });
-  var allDates = Object.keys(dateSet).sort();
-
-  var courtSet = {};
-  courts.forEach(function(x) {
-    if (areaFilter && x.location !== areaFilter) return;
-    if (!courtSet[x.court_name]) courtSet[x.court_name] = x.location;
-  });
-  var courtNames = Object.keys(courtSet).sort();
-
-  var slotMap = {};
-  courts.forEach(function(x) {
-    if (areaFilter && x.location !== areaFilter) return;
-    if (!slotMap[x.court_name]) slotMap[x.court_name] = {};
-    if (!slotMap[x.court_name][x.date]) slotMap[x.court_name][x.date] = [];
-    slotMap[x.court_name][x.date].push(x);
-  });
-
-  // 예약가능 모드: 예약 가능한 슬롯이 있는 날짜/코트만 필터링
-  var dates;
-  if (availOnly) {
-    dates = allDates.filter(function(dt) {
-      return courtNames.some(function(name) {
-        var slots = slotMap[name] ? (slotMap[name][dt] || []) : [];
-        return slots.some(function(s){ return s.is_available; });
-      });
-    });
-    courtNames = courtNames.filter(function(name) {
-      return dates.some(function(dt) {
-        var slots = slotMap[name] ? (slotMap[name][dt] || []) : [];
-        return slots.some(function(s){ return s.is_available; });
-      });
-    });
-    if (!dates.length || !courtNames.length) {
-      d.innerHTML = '<div class="text-warning">예약 가능한 코트가 없습니다.</div>'; return;
-    }
-  } else {
-    dates = allDates;
-  }
-
-  var today  = new Date().toISOString().slice(0,10);
-  var DOW_KO = ['일','월','화','수','목','금','토'];
-
-  var html = '<table class="cal-table"><thead><tr><th class="col-court">코트</th>';
-  dates.forEach(function(dt) {
-    var d2  = new Date(dt + 'T00:00:00');
-    var dow = d2.getDay();
-    var cls = 'col-date' + (dt === today ? ' today' : '') + (dow === 0 || dow === 6 ? ' weekend' : '');
-    html += '<th class="' + cls + '">' + dt.slice(5,7) + '/' + dt.slice(8,10)
-          + '<br><span style="font-size:0.7rem">' + DOW_KO[dow] + '</span></th>';
-  });
-  html += '</tr></thead><tbody>';
-
-  courtNames.forEach(function(name) {
-    html += '<tr><td class="col-court">' + yn_calName(name)
-          + '<br><small class="text-muted">' + courtSet[name].replace(', ', '<br>') + '</small></td>';
-    dates.forEach(function(dt) {
-      var slots = slotMap[name] ? (slotMap[name][dt] || []) : [];
-      if (availOnly) slots = slots.filter(function(s){ return s.is_available; });
-      if (!slots.length) { html += '<td class="col-date"><span class="no-slot">-</span></td>'; return; }
-      slots.sort(function(a,b){ return parseInt(a.time) - parseInt(b.time); });
-      var cell = '';
-      slots.forEach(function(s) {
-        var t = s.time.replace(/ ~ .*/, '');
-        cell += availOnly
-          ? '<span class="slot-avail">✓ ' + t + '</span>'
-          : (s.is_available
-            ? '<span class="slot-avail">✓ ' + t + '</span>'
-            : '<span class="slot-taken">✗ ' + t + '</span>');
-      });
-      html += '<td class="col-date">' + cell + '</td>';
-    });
-    html += '</tr>';
-  });
-  html += '</tbody></table>';
-  d.innerHTML = html;
-}
-
-// 1. 예약 가능한 관심 코트 (모니터링 필터 통과 슬롯)
-function yn_renderInterest(avail) {
-  var d = document.getElementById('yn-interestDiv');
-  if (!avail.length) { d.innerHTML = '<div class="text-warning">예약 가능한 관심 코트가 없습니다.</div>'; return; }
-  var byDate = {};
-  avail.forEach(function(x) {
-    if (!byDate[x.date]) byDate[x.date] = {};
-    if (!byDate[x.date][x.location]) byDate[x.date][x.location] = {};
-    if (!byDate[x.date][x.location][x.court_name]) byDate[x.date][x.location][x.court_name] = [];
-    byDate[x.date][x.location][x.court_name].push(x.time);
-  });
-  var dowMap = {};
-  avail.forEach(function(x){ dowMap[x.date] = x.day_of_week; });
-  var html = '';
-  Object.keys(byDate).sort().forEach(function(dt) {
-    html += '<div class="sn-date-header">📅 ' + dt + ' (' + (dowMap[dt] || '') + ')</div><div class="ms-2 mb-3">';
-    Object.keys(byDate[dt]).sort().forEach(function(loc) {
-      Object.keys(byDate[dt][loc]).sort().forEach(function(name) {
-        html += '<div class="sn-facility">🏟 ' + yn_shortName(name) + '<small class="text-muted ms-2">' + loc + '</small></div>';
-        byDate[dt][loc][name].sort().forEach(function(t) {
-          html += '<div class="sn-slot">✓ ' + t + '</div>';
-        });
-      });
-    });
-    html += '</div>';
-  });
-  d.innerHTML = html;
-}
-
-// 2. 예약 가능한 모든 코트 (지역별 토글)
-function yn_renderAvail(courts) {
-  var d = document.getElementById('yn-availDiv');
-  var avail = courts.filter(function(x){ return x.is_available; });
-  if (!avail.length) { d.innerHTML = '<div class="text-warning">예약 가능한 코트가 없습니다.</div>'; return; }
-  var byLoc = {};
-  var dowMap = {};
-  avail.forEach(function(x) {
-    dowMap[x.date] = x.day_of_week;
-    if (!byLoc[x.location]) byLoc[x.location] = {};
-    if (!byLoc[x.location][x.date]) byLoc[x.location][x.date] = [];
-    byLoc[x.location][x.date].push(x);
-  });
-  var html = '';
-  Object.keys(byLoc).sort().forEach(function(loc) {
-    html += '<div class="facility-section"><div class="facility-header" onclick="toggleSection(this)">'
-          + '<span>' + loc + '</span><span class="toggle-icon">▲</span></div>'
-          + '<div class="facility-content">';
-    Object.keys(byLoc[loc]).sort().forEach(function(dt) {
-      var dow = dowMap[dt] || '';
-      html += '<div class="date-section"><div class="date-header" onclick="toggleSection(this)">'
-            + '<span>' + dt + '(' + dow + ')</span><span class="toggle-icon">▲</span></div>'
-            + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
-            + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
-      byLoc[loc][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
-        html += '<tr><td>' + yn_shortName(s.court_name) + '</td><td>' + s.time + '</td><td class="status-available">예약 가능</td></tr>';
-      });
-      html += '</tbody></table></div></div>';
-    });
-    html += '</div></div>';
-  });
-  d.innerHTML = html;
-}
-
-// 3. 전체 코트 현황 (지역별 토글)
-function yn_renderTable(courts) {
-  var d = document.getElementById('yn-tableDiv');
-  if (!courts.length) { d.innerHTML = '<div class="text-muted">데이터 없음</div>'; return; }
-  var byLoc = {};
-  var dowMap = {};
-  courts.forEach(function(x) {
-    dowMap[x.date] = x.day_of_week;
-    if (!byLoc[x.location]) byLoc[x.location] = {};
-    if (!byLoc[x.location][x.date]) byLoc[x.location][x.date] = [];
-    byLoc[x.location][x.date].push(x);
-  });
-  var html = '';
-  Object.keys(byLoc).sort().forEach(function(loc) {
-    html += '<div class="facility-section"><div class="facility-header" onclick="toggleSection(this)">'
-          + '<span>' + loc + '</span><span class="toggle-icon">▲</span></div>'
-          + '<div class="facility-content">';
-    Object.keys(byLoc[loc]).sort().forEach(function(dt) {
-      var dow = dowMap[dt] || '';
-      html += '<div class="date-section"><div class="date-header" onclick="toggleSection(this)">'
-            + '<span>' + dt + '(' + dow + ')</span><span class="toggle-icon">▲</span></div>'
-            + '<div class="date-content"><table class="table table-sm mb-0"><thead><tr>'
-            + '<th>코트</th><th>시간</th><th>상태</th></tr></thead><tbody>';
-      byLoc[loc][dt].sort(function(a,b){ return a.time.localeCompare(b.time); }).forEach(function(s) {
-        var statusCls  = s.is_available ? 'status-available' : 'status-reserved';
-        var statusText = s.is_available ? '예약 가능' : '예약됨';
-        html += '<tr><td>' + yn_shortName(s.court_name) + '</td><td>' + s.time
-              + '</td><td class="' + statusCls + '">' + statusText + '</td></tr>';
-      });
-      html += '</tbody></table></div></div>';
-    });
-    html += '</div></div>';
-  });
-  d.innerHTML = html;
-}
-
-// ─── 초기화 ──────────────────────────────────────────────
-switchCity('sungnam');         // 기본: 성남
-// 처음 열 때 양쪽 결과를 한 번만 읽는다. 이후에는 새로고침 버튼으로만 조회한다.
-sn_refresh();
-yn_refresh();
-</script>
-</body>
-</html>"""
-
-
-# ─────────────────────────────────────────────────────────
-# Flask 라우트
-# ─────────────────────────────────────────────────────────
-@app.route("/")
-def index():
-    return _TEMPLATE
-
-
-@app.route("/api/sungnam")
-def api_sungnam():
+def build_sungnam_payload():
     with _lock:
-        return jsonify({
+        return {
             "available":   _sn_available,
             "all_courts":  _sn_courts,
             "last_update": _sn_last_update,
@@ -1753,28 +1105,32 @@ def api_sungnam():
             "error":       _sn_error,
             "progress":    {"completed": len(_sn_cycle_done), "total": len(_sn_targets)},
             "coverage":    _sn_coverage(),
-        })
+        }
 
 
-@app.route("/api/yongin")
-def api_yongin():
+def build_yongin_payload():
     with _lock:
-        return jsonify({
+        return {
             "available":   _yn_available,
             "all_courts":  _yn_courts,
             "last_update": _yn_last_update,
             "period":      _yn_period,
             "status":      _yn_status,
             "error":       _yn_error,
-        })
+        }
+
+
+def build_snapshot():
+    return {"sungnam": build_sungnam_payload(), "yongin": build_yongin_payload()}
 
 
 # ─────────────────────────────────────────────────────────
 # 진입점
 # ─────────────────────────────────────────────────────────
 def create_argument_parser():
-    parser = argparse.ArgumentParser(description="성남+용인 테니스 코트 통합 모니터링")
-    parser.add_argument("--port", type=int, default=8000, help="Flask 포트 (기본: 8000)")
+    parser = argparse.ArgumentParser(description="성남+용인 테니스 코트 모니터링 (Webpage로 결과 전송)")
+    parser.add_argument("--webpage-url", default=os.environ.get("WEBPAGE_URL"),
+                        help="결과를 보낼 Webpage 주소 (기본: WEBPAGE_URL 환경변수). 인증 토큰은 WEBPAGE_INGEST_TOKEN 환경변수")
     login_mode = parser.add_mutually_exclusive_group()
     login_mode.add_argument("--sn-manual-login", dest="sn_manual_login", action="store_true",
                             help="성남 Chrome에서 직접 로그인하고 세션 재사용")
@@ -1813,7 +1169,7 @@ if __name__ == "__main__":
     setup_logging()
     load_telegram_config()
     logging.info("=" * 60)
-    logging.info("🎾 테니스 코트 통합 모니터링 시작")
+    logging.info("🎾 테니스 코트 모니터 시작")
     logging.info(f"   성남 설정: {SUNGNAM_DIR}")
     logging.info(f"   용인 설정: {NOTIFY_TABLE}")
     logging.info("   성남 로그인: %s", "직접 로그인 / 기존 세션 재사용" if SN_MANUAL_LOGIN else "저장된 계정으로 자동 로그인")
@@ -1829,12 +1185,27 @@ if __name__ == "__main__":
     # 백그라운드 모니터링 스레드 시작
     t_sn = threading.Thread(target=sungnam_loop, daemon=True, name="sungnam")
     t_yn = threading.Thread(target=yongin_loop,  daemon=True, name="yongin")
+    publisher = None
+    webpage_token = os.environ.get("WEBPAGE_INGEST_TOKEN", "").strip()
+    if args.webpage_url and webpage_token:
+        try:
+            publisher = WebPublisher(args.webpage_url, webpage_token, build_snapshot)
+            logging.info("   Webpage 전송: %s", publisher.endpoint)
+        except ValueError as exc:
+            logging.error("[WEB] %s – Webpage 전송을 사용하지 않습니다.", exc)
+    else:
+        logging.warning("[WEB] WEBPAGE_URL / WEBPAGE_INGEST_TOKEN이 없어 Webpage로 결과를 보내지 않습니다 (텔레그램 알림만 동작).")
     try:
         if sungnam_enabled:
             t_sn.start()
         t_yn.start()
-        logging.info(f"🌐 통합 웹 UI: http://localhost:{args.port}")
-        app.run(host="0.0.0.0", port=args.port, debug=False)
+        if publisher is not None:
+            publisher.start()
+        # 서비스 종료(SIGTERM/Ctrl+C)는 SystemExit/KeyboardInterrupt로 이 루프를 벗어난다.
+        while True:
+            time.sleep(1)
     finally:
+        if publisher is not None:
+            publisher.stop()
         if sungnam_enabled:
             stop_sungnam(t_sn)

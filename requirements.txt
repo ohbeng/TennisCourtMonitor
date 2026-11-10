@@ -1,6 +1,0 @@
-# Windows/Linux 통합 모니터
-flask
-requests
-beautifulsoup4
-urllib3
-nodriver==0.50.3

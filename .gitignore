@@ -3,16 +3,17 @@ __pycache__/
 .venv/
 
 # 개인 계정과 브라우저 로그인 세션
-/auth.txt
-/.nodriver_profile*/
-/.chrome_profile/
-/.pw_profile/
+auth.txt
+.nodriver_profile*/
+.chrome_profile/
+.pw_profile/
 
 # 실행 로그와 진단 결과
 *.log
-/log_all/
+log_all/
 /diag_out/
 /sn_diag.*
+tennis_snapshot.json
 
 # 로컬 개발 도구 설정
 /.agents/

@@ -1,0 +1,5 @@
+# Monitor (Linux 서비스, Windows에서도 실행 가능)
+requests
+beautifulsoup4
+urllib3
+nodriver==0.50.3
