@@ -14,7 +14,7 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 또는 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` 환경변수를 함께 설정합니다.
 두 환경변수가 모두 있으면 파일보다 우선합니다. 설정이 없으면 알림을 보내지 않습니다.
 
-알림 대상은 `NotifyTable.txt`의 `[sungnam]`, `[yongin]`에서 지정합니다.
+알림 대상은 `NotifyTable.txt`의 `[sungnam]`에서 지정합니다. 용인은 텔레그램 알림을 보내지 않습니다.
 조회한 예약 가능 목록이 직전 알림 목록과 달라질 때 알림을 보냅니다.
 설정을 바꾼 뒤에는 모니터를 다시 실행하세요.
 

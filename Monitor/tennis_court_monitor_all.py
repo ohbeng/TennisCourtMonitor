@@ -407,7 +407,7 @@ def _sn_coverage():
 # ─────────────────────────────────────────────────────────
 # Telegram 알림
 # ─────────────────────────────────────────────────────────
-NOTIFY_TABLE     = os.path.join(_HERE, "NotifyTable.txt")        # 성남+용인 텔레그램 알림
+NOTIFY_TABLE     = os.path.join(_HERE, "NotifyTable.txt")        # 성남 텔레그램 알림
 
 _tg_bot_token = ""
 _tg_chat_id   = ""
@@ -540,33 +540,6 @@ def sn_passes_notify(slot, notify_facs):
             return True
         return any(sn_time_match(t, ft) for ft in times)
     return False
-
-
-def yn_load_notify_table():
-    """NotifyTable.txt [yongin] 섹션 파싱"""
-    rules   = {}
-    cur_gu  = None
-    section = None
-    for line in _section_lines(NOTIFY_TABLE, "yongin"):
-        if not line:
-            cur_gu = None; section = None; continue
-        if line.endswith("구"):
-            cur_gu = line; section = None; continue
-        if cur_gu is None:
-            continue
-        if line == "주중":
-            section = "weekday"
-            if cur_gu not in rules:
-                rules[cur_gu] = {"weekday": [], "weekend_all": False}
-        elif line == "주말":
-            section = "weekend"
-            if cur_gu not in rules:
-                rules[cur_gu] = {"weekday": [], "weekend_all": False}
-        elif section == "weekday" and (line.startswith("~") or line.endswith("~")):
-            rules[cur_gu]["weekday"].append(line)
-        elif section == "weekend" and line == "All":
-            rules[cur_gu]["weekend_all"] = True
-    return rules
 
 
 def _courts_key(courts):
@@ -800,36 +773,6 @@ def yn_dates_until_end_of_month():
     return [today + timedelta(days=i) for i in range(days)]
 
 
-def yn_passes_filter(entry, table):
-    if not table:
-        return True
-    loc        = entry.get("location", "")
-    matched_gu = next((g for g in table if g in loc), None)
-    if matched_gu is None:
-        return False
-    spec    = table[matched_gu]
-    dow     = entry.get("day_of_week", "")
-    weekend = dow in ("토요일", "일요일")
-    if weekend:
-        return spec.get("weekend_all", False)
-    try:
-        parts = entry.get("time", "").split("~")
-        sm = sum(int(x) * m for x, m in zip(parts[0].strip().split(":"), [60, 1]))
-        em = sum(int(x) * m for x, m in zip(parts[1].strip().split(":"), [60, 1]))
-    except Exception:
-        return False
-    for rule in spec.get("weekday", []):
-        if rule.startswith("~"):
-            lh, lm = map(int, rule[1:].split(":"))
-            if em <= lh * 60 + lm:
-                return True
-        elif rule.endswith("~"):
-            lh, lm = map(int, rule[:-1].split(":"))
-            if sm >= lh * 60 + lm:
-                return True
-    return False
-
-
 def yn_run_once():
     """용인 모니터링 1회. → (available, all_courts, period_str)"""
     creds = yn_load_credentials()
@@ -915,25 +858,6 @@ def _sn_build_msg(courts):
             for s in sorted(slots, key=lambda x: x["time"]):
                 lines.append(f"    ✓ {_tg_escape(s['court'])}  {_tg_escape(s['time'])}")
     lines += ["", _tg_escape("https://res.isdc.co.kr/")]
-    return "\n".join(lines)
-
-
-def _yn_build_msg(courts):
-    lines = [_tg_escape("🎾 [용인] 예약 가능한 관심 코트 발견!"), ""]
-    by_date = {}
-    for c in courts:
-        by_date.setdefault(c["date"], {}).setdefault(c["location"], {}).setdefault(c["court_name"], []).append(c)
-    dow_map = {c["date"]: c["day_of_week"] for c in courts}
-    for dt in sorted(by_date):
-        dow = dow_map.get(dt, "")
-        lines.append(f"*{_tg_escape(dt)} \\({_tg_escape(dow)}\\)*")
-        for loc, names in sorted(by_date[dt].items()):
-            for name, slots in sorted(names.items()):
-                short = name.replace("[유료]","").replace("[무료]","").split("_")[0].strip()
-                lines.append(f"  🏟 {_tg_escape(short)}  _{_tg_escape(loc)}_")
-                for s in sorted(slots, key=lambda x: x["time"]):
-                    lines.append(f"    ✓ {_tg_escape(s['time'])}")
-    lines += ["", _tg_escape("https://publicsports.yongin.go.kr/")]
     return "\n".join(lines)
 
 
@@ -1036,12 +960,6 @@ def stop_sungnam(thread):
 
 def yongin_loop():
     global _yn_available, _yn_courts, _yn_last_update, _yn_period, _yn_status, _yn_error
-    notify_table = yn_load_notify_table()
-    if notify_table:
-        logging.info(f"[YN] NotifyTable 로드: {list(notify_table.keys())}")
-    else:
-        logging.warning("[YN] NotifyTable.txt 없음 – 용인 텔레그램 알림 비활성화")
-    yn_prev_key = [""]
     while True:
         try:
             with _lock:
@@ -1055,11 +973,6 @@ def yongin_loop():
                 _yn_period      = period
                 _yn_status, _yn_error = "ok", ""
             logging.info(f"[YN] 완료: 예약가능 {len(avail)}개 / 전체 {len(courts)}개")
-            # 알림 체크: 웹용 전체 조회 결과 중 NotifyTable 조건에 맞는 슬롯만 알림
-            if notify_table:
-                notify_slots = [e for e in avail if yn_passes_filter(e, notify_table)]
-                logging.info(f"[YN] 알림 대상 슬롯: {len(notify_slots)}개")
-                _notify_if_changed("[YN]", notify_slots, yn_prev_key, _yn_build_msg)
         except Exception as e:
             with _lock:
                 _yn_status, _yn_error = "error", str(e)
