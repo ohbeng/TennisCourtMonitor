@@ -174,6 +174,17 @@ def sn_load_accounts():
     return _load_auth_section("sungnam")
 
 
+# MonitoringTable.txt 가 없을 때 웹 화면용으로 조회하는 시설 (NotifyTable.txt 와 무관)
+SN_DEFAULT_FACILITIES = (
+    ("FAC26", "탄천실내"), ("FAC61", "수내"), ("FAC99", "야탑"), ("FAC101", "구미"),
+)
+
+
+def sn_default_facilities():
+    return [{"id": fac_id, "name": name, "weekday_times": ["ALL"], "weekend_times": ["ALL"]}
+            for fac_id, name in SN_DEFAULT_FACILITIES]
+
+
 def sn_load_monitoring_table():
     mon_file   = os.path.join(SUNGNAM_DIR, "MonitoringTable.txt")
     facilities = []
@@ -789,34 +800,6 @@ def yn_dates_until_end_of_month():
     return [today + timedelta(days=i) for i in range(days)]
 
 
-def yn_load_monitoring_table():
-    """NotifyTable.txt [yongin] 섹션으로 모니터링 필터 적용"""
-    rules   = {}
-    cur_gu  = None
-    section = None
-    for line in _section_lines(NOTIFY_TABLE, "yongin"):
-        if not line:
-            cur_gu = None; section = None; continue
-        if line.endswith("구"):
-            cur_gu = line; section = None; continue
-        if cur_gu is None:
-            continue
-        if line == "주중":
-            section = "weekday"
-            if cur_gu not in rules:
-                rules[cur_gu] = {"weekday": [], "weekend_all": False}
-        elif line == "주말":
-            section = "weekend"
-            if cur_gu not in rules:
-                rules[cur_gu] = {"weekday": [], "weekend_all": False}
-        elif section == "weekday" and (line.startswith("~") or line.endswith("~")):
-            rules[cur_gu]["weekday"].append(line)
-        elif section == "weekend" and line == "All":
-            rules[cur_gu]["weekend_all"] = True
-    return rules
-
-
-
 def yn_passes_filter(entry, table):
     if not table:
         return True
@@ -859,12 +842,6 @@ def yn_run_once():
         logging.error("[YN] 코트 목록 없음")
         return [], [], ""
 
-    mon_table = yn_load_monitoring_table()
-    if mon_table:
-        before = len(courts)
-        courts = [c for c in courts if any(g in c["location"] for g in mon_table)]
-        logging.info(f"[YN] 코트 필터: {before}→{len(courts)}")
-
     target_dates = yn_dates_until_end_of_month()
     period_str   = (f"{target_dates[0].strftime('%Y-%m-%d')} ~ "
                     f"{target_dates[-1].strftime('%Y-%m-%d')} ({len(target_dates)}일)")
@@ -904,11 +881,6 @@ def yn_run_once():
                 logging.error(f"[YN] 워커 오류 [{court['name']}]: {exc}")
             completed += 1
             logging.info(f"[YN] ✅ {completed}/{len(courts)}: {court['name']}")
-
-    if mon_table:
-        all_available  = [e for e in all_available  if yn_passes_filter(e, mon_table)]
-        all_court_data = [e for e in all_court_data if yn_passes_filter(e, mon_table)]
-        logging.info(f"[YN] 시간 필터 적용: 예약가능 {len(all_available)}개")
 
     return all_available, all_court_data, period_str
 
@@ -968,21 +940,12 @@ def _yn_build_msg(courts):
 def sungnam_loop():
     global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error, _sn_client
     accounts     = sn_load_accounts()
-    facilities   = sn_load_monitoring_table()
+    facilities   = sn_load_monitoring_table() or sn_default_facilities()
     notify_facs  = sn_load_notify_table()
     if not accounts and not SN_MANUAL_LOGIN:
         _sn_status, _sn_error = "error", "auth.txt에 성남 계정이 없습니다."
         logging.error("[SN] auth.txt 없음 – 성남 모니터링 비활성화")
         return
-    if not facilities:
-        if notify_facs:
-            # MonitoringTable 없음 → NotifyTable 시설/시간대를 그대로 스캔
-            facilities = notify_facs
-            logging.warning(f"[SN] MonitoringTable 없음 – NotifyTable 시설 스캔: {[f['name'] for f in facilities]}")
-        else:
-            _sn_status, _sn_error = "error", "성남 조회 대상 시설 설정이 없습니다."
-            logging.error("[SN] NotifyTable.txt 없음 – 성남 모니터링 비활성화")
-            return
     if notify_facs:
         logging.info(f"[SN] NotifyTable 로드: {[f['name'] for f in notify_facs]}")
     else:
@@ -1092,7 +1055,7 @@ def yongin_loop():
                 _yn_period      = period
                 _yn_status, _yn_error = "ok", ""
             logging.info(f"[YN] 완료: 예약가능 {len(avail)}개 / 전체 {len(courts)}개")
-            # 알림 체크: avail 중 notify 조건 맞는 슬롯 (MonitoringTable 이미 필터됨)
+            # 알림 체크: 웹용 전체 조회 결과 중 NotifyTable 조건에 맞는 슬롯만 알림
             if notify_table:
                 notify_slots = [e for e in avail if yn_passes_filter(e, notify_table)]
                 logging.info(f"[YN] 알림 대상 슬롯: {len(notify_slots)}개")
@@ -1185,7 +1148,7 @@ if __name__ == "__main__":
     logging.info("=" * 60)
     logging.info("🎾 테니스 코트 모니터 시작")
     logging.info(f"   성남 설정: {SUNGNAM_DIR}")
-    logging.info(f"   용인 설정: {NOTIFY_TABLE}")
+    logging.info(f"   알림 설정: {NOTIFY_TABLE}")
     logging.info("   성남 로그인: %s", "직접 로그인 / 기존 세션 재사용" if SN_MANUAL_LOGIN else "저장된 계정으로 자동 로그인")
     logging.info("   성남 Chrome: %s", "백그라운드 실행" if SN_BACKGROUND and not SN_MANUAL_LOGIN else "화면 표시")
     logging.info("=" * 60)

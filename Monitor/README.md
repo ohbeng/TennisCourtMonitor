@@ -120,9 +120,10 @@ All
 
 ### 3. 조회 범위
 
-용인은 `NotifyTable.txt [yongin]`의 구·시간 조건을 조회 필터로도 사용합니다.
-성남은 `Sungnam/MonitoringTable.txt`가 있으면 해당 시설을 조회하고, 없으면
-`NotifyTable.txt [sungnam]`의 시설·시간 조건을 사용합니다.
+웹 화면에 표시하는 조회 범위는 `NotifyTable.txt`와 무관하며, `NotifyTable.txt`는 텔레그램 알림 대상만 정합니다.
+용인은 전체 테니스 코트·전 시간대를 조회합니다.
+성남은 `Sungnam/MonitoringTable.txt`가 있으면 해당 시설·시간대를 조회하고, 없으면
+탄천실내·수내·야탑·구미 전 시간대를 조회합니다.
 
 ---
 
