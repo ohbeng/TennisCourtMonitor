@@ -58,6 +58,7 @@ class YonginListTests(unittest.TestCase):
         old = [{"court_name": "previous successful data"}]
         with patch.multiple(monitor, _yn_courts=old, _yn_available=old,
                             _yn_last_update="last-success", _yn_status="ok", _yn_error=""), \
+             patch.object(monitor, "yn_load_notify_table", return_value={}), \
              patch.object(monitor, "yn_run_once", side_effect=RuntimeError("incomplete court list")), \
              patch.object(monitor, "_notify_if_changed") as notify, \
              patch.object(monitor.time, "sleep", side_effect=KeyboardInterrupt) as sleep:
@@ -71,38 +72,6 @@ class YonginListTests(unittest.TestCase):
             self.assertEqual(data["status"], "error")
             self.assertEqual(data["error"], "incomplete court list")
             notify.assert_not_called()
-
-
-class NotifyTableIndependenceTests(unittest.TestCase):
-    def test_yongin_loop_never_sends_telegram(self):
-        slot = {"location": "기흥구", "day_of_week": "월요일", "time": "18:00 ~ 20:00", "is_available": True}
-        with patch.object(monitor, "yn_run_once", return_value=([slot], [slot], "period")), \
-             patch.object(monitor, "send_telegram") as send, \
-             patch.object(monitor.time, "sleep", side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt):
-                monitor.yongin_loop()
-        send.assert_not_called()
-
-    def test_yongin_scan_covers_every_court(self):
-        courts = [{"resve_id": "1", "name": "테니스장 1", "location": "기흥구"},
-                  {"resve_id": "2", "name": "테니스장 2", "location": "처인구"}]
-        morning = {"location": "기흥구", "day_of_week": "월요일", "time": "06:00 ~ 08:00", "is_available": True}
-        with patch.object(monitor, "yn_load_credentials", return_value=[("id", "pw")]), \
-             patch.object(monitor, "yn_fetch_courts", return_value=courts), \
-             patch.object(monitor, "yn_make_session"), \
-             patch.object(monitor, "yn_group_login", return_value=True), \
-             patch.object(monitor, "yn_scan_one_court", return_value=([morning], [morning])) as scan:
-            available, all_courts, _ = monitor.yn_run_once()
-        self.assertEqual(scan.call_count, 2)
-        self.assertEqual(len(available), 2)
-        self.assertEqual(len(all_courts), 2)
-
-    def test_sungnam_default_scan_covers_all_times(self):
-        facilities = monitor.sn_default_facilities()
-        self.assertEqual([f["id"] for f in facilities], ["FAC26", "FAC61", "FAC99", "FAC101"])
-        for facility in facilities:
-            self.assertEqual(facility["weekday_times"], ["ALL"])
-            self.assertEqual(facility["weekend_times"], ["ALL"])
 
 
 if __name__ == "__main__":

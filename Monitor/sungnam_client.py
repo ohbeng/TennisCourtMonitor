@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import random
 import re
 import sys
 from urllib.parse import urlsplit
@@ -22,12 +21,6 @@ LOGIN_TIMEOUT = 180
 TIMETABLE_TIMEOUT = 300
 CANCEL_GRACE_SECONDS = 10
 RECOVERY_TIMEOUT = 20
-# 자동화로 탐지되지 않도록 클릭·페이지 이동·입력 사이에 쉬는 무작위 시간(초).
-HUMAN_DELAY_RANGE = (0.5, 2.0)
-
-
-async def _human_pause():
-    await asyncio.sleep(random.uniform(*HUMAN_DELAY_RANGE))
 
 
 class SungnamError(RuntimeError):
@@ -348,14 +341,14 @@ class SungnamClient:
             # 로그인 대기가 끝나도 같은 페이지를 유지한다. 차단 페이지에서
             # 주기적으로 login.do를 다시 요청하거나 비밀번호를 제출하지 않는다.
             if not self._manual_waiting or self.page is None:
-                self.page = await self._goto(f"{BASE_URL}/login.do")
+                self.page = await self.browser.get(f"{BASE_URL}/login.do")
             self._manual_waiting = True
             logging.info("[SN] Chrome에서 직접 로그인하세요. 기존 로그인 세션이 있으면 그대로 사용합니다.")
             await self._wait_state(after_login=True, timeout=180, manual_recovery=True)
             self._manual_waiting = False
             logging.info("[SN] 로그인 확인 완료 (직접 로그인/기존 세션)")
             return True
-        self.page = await self._goto(f"{BASE_URL}/login.do")
+        self.page = await self.browser.get(f"{BASE_URL}/login.do")
         state = await self._wait_state()
         if state.get("authenticated") is True:
             logging.info("[SN] 기존 브라우저 로그인 세션 확인")
@@ -364,13 +357,11 @@ class SungnamClient:
         self.page.add_handler(uc.cdp.page.JavascriptDialogOpening, self._dialog)
         logging.info("[SN] 저장된 계정으로 자동 로그인합니다 (%s).", "백그라운드" if self.background else "화면 표시")
         for selector, value in (("#web_id", username), ("#web_pw", password)):
-            await _human_pause()
             element = await self.page.select(selector, timeout=10)
             if element is None:
                 raise LoginFailed("성남 로그인 입력란을 찾지 못했습니다.")
             await element.clear_input()
             await element.send_keys(value)
-        await _human_pause()
         button = await self.page.select("#btn_login", timeout=10)
         if button is None:
             raise LoginFailed("성남 로그인 버튼을 찾지 못했습니다.")
@@ -418,12 +409,7 @@ class SungnamClient:
             pass
         raise SungnamError(f"성남 조회 화면을 기다리는 시간이 초과되었습니다 ({detail}).")
 
-    async def _goto(self, url):
-        await _human_pause()
-        return await self.browser.get(url)
-
     async def _click(self, selector, *, path=None, element=None):
-        await _human_pause()
         # 페이지가 다시 그려지면 이미 찾은 요소의 DOM 노드가 사라져 click이 실패한다.
         # 이 경우 요소를 다시 찾아 클릭한다.
         for attempt in range(5):
@@ -447,14 +433,14 @@ class SungnamClient:
         preferred = group_map.get(facility_id) or {
             "FAC26": "1", "FAC61": "5", "FAC99": "14", "FAC101": "15",
         }.get(facility_id)
-        self.page = await self._goto(f"{BASE_URL}/facilityList.do?facType=29")
+        self.page = await self.browser.get(f"{BASE_URL}/facilityList.do?facType=29")
         await self._wait_element(".tennisGroup", path="facilityList.do")
         groups = await self._json("JSON.stringify(Array.from(document.querySelectorAll('.tennisGroup')).map(x=>x.id))")
         if preferred in groups:
             groups = [preferred] + [group for group in groups if group != preferred]
         for index, group in enumerate(groups):
             if index:
-                self.page = await self._goto(f"{BASE_URL}/facilityList.do?facType=29")
+                self.page = await self.browser.get(f"{BASE_URL}/facilityList.do?facType=29")
                 await self._wait_element(".tennisGroup", path="facilityList.do")
             await self._click(f'.tennisGroup[id={json.dumps(group)}]', path="facilityList.do")
             await self._wait_element(".facilityInfo", path="tennisList.do")
