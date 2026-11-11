@@ -15,8 +15,19 @@ from browser_background import create_background_desktop, supports_background
 
 BASE_URL = "https://res.isdc.co.kr"
 
+# Chrome DevTools 명령 중 일부는 응답이 오지 않으면 영원히 기다린다. 한 번의 브라우저
+# 작업(로그인, 시간표 1건)에 전체 시간 제한을 둬서 조회 루프가 멈추지 않게 한다.
+LOGIN_TIMEOUT = 180
+TIMETABLE_TIMEOUT = 300
+CANCEL_GRACE_SECONDS = 10
+RECOVERY_TIMEOUT = 20
+
 
 class SungnamError(RuntimeError):
+    pass
+
+
+class OperationTimeout(SungnamError):
     pass
 
 
@@ -136,7 +147,7 @@ class SungnamClient:
         self._stop_requested = False
         self._active_task = None
 
-    def _run(self, coroutine, *, closing=False):
+    def _run(self, coroutine, *, closing=False, timeout=None):
         if self._stop_requested and not closing:
             coroutine.close()
             raise asyncio.CancelledError()
@@ -144,7 +155,17 @@ class SungnamClient:
         task = self.loop.create_task(coroutine)
         self._active_task = task
         try:
-            return self.loop.run_until_complete(task)
+            if timeout is None:
+                return self.loop.run_until_complete(task)
+            done, _ = self.loop.run_until_complete(asyncio.wait({task}, timeout=timeout))
+            if done:
+                return task.result()
+            # 취소 정리 중에도 멈출 수 있으므로 유예 시간 뒤에는 작업을 포기한다.
+            task.cancel()
+            done, _ = self.loop.run_until_complete(asyncio.wait({task}, timeout=CANCEL_GRACE_SECONDS))
+            if done and not task.cancelled():
+                task.exception()
+            raise OperationTimeout(f"성남 브라우저 작업이 {timeout}초 안에 끝나지 않아 중단했습니다.")
         finally:
             self._active_task = None
 
@@ -352,7 +373,14 @@ class SungnamClient:
     def login(self, username, password):
         self.authenticated = False
         self._current_facility = None
-        self.authenticated = self._run(self._login(username, password)) is True
+        try:
+            # 직접 로그인은 사용자가 조치할 때까지 기다리므로 전체 시간 제한을 두지 않는다.
+            self.authenticated = self._run(
+                self._login(username, password), timeout=None if self.manual_login else LOGIN_TIMEOUT,
+            ) is True
+        except OperationTimeout:
+            self._recover_after_timeout()
+            raise
         return self.authenticated
 
     async def _wait_element(self, selector, *, path=None, timeout=30):
@@ -546,12 +574,39 @@ class SungnamClient:
 
     def get_timetable(self, facility_id, date_str):
         try:
-            return self._run(self._get_timetable(facility_id, date_str))
+            return self._run(self._get_timetable(facility_id, date_str), timeout=TIMETABLE_TIMEOUT)
+        except OperationTimeout:
+            self._recover_after_timeout()
+            raise
         except (AccessBlocked, SessionExpired) as exc:
             self.authenticated = False
             self._current_facility = None
             self._manual_waiting = self.manual_login and isinstance(exc, AccessBlocked)
             raise
+
+    def _recover_after_timeout(self):
+        """응답 없는 Chrome을 버린다. 다음 조회가 새 Chrome을 시작하고 다시 로그인한다."""
+        logging.error("[SN] 브라우저 작업이 제한 시간을 넘겨 Chrome을 종료하고 다음 조회에서 다시 시작합니다.")
+        browser = self.browser
+        process = browser._process if browser is not None else None
+        try:
+            self._run(self._close(), closing=True, timeout=RECOVERY_TIMEOUT)
+        except Exception as exc:
+            logging.warning("[SN] Chrome 정상 종료에 실패해 강제 종료합니다: %s", exc)
+        if process is not None and process.returncode is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        if self._desktop is not None:
+            try:
+                self._run(self._desktop.aclose(), closing=True, timeout=RECOVERY_TIMEOUT)
+            except Exception as exc:
+                logging.warning("[SN] 백그라운드 작업 공간 정리 실패: %s", exc)
+        self.browser = self.page = self._desktop = None
+        self.authenticated = False
+        self._current_facility = None
+        self._manual_waiting = False
 
     def wait(self, seconds):
         # 폴링 사이에도 DevTools 연결과 브라우저 이벤트를 처리한다.
@@ -606,7 +661,11 @@ class SungnamClient:
             for task in pending:
                 task.cancel()
             if pending:
-                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                # 취소에 응답하지 않는 작업 때문에 종료가 멈추지 않게 한다.
+                self.loop.run_until_complete(asyncio.wait(pending, timeout=CANCEL_GRACE_SECONDS))
+                for task in pending:
+                    if task.done() and not task.cancelled():
+                        task.exception()
             self.loop.run_until_complete(self.loop.shutdown_asyncgens())
             self.loop.close()
             asyncio.set_event_loop(None)

@@ -69,8 +69,8 @@ YN_TIME_API  = f"{YN_BASE_URL}/sports/selectRegistTimeByChosenDateFcltyRceptResv
 YN_PAGE_SIZE = 8
 YN_WORKERS   = 8
 # 성남·용인 모두 한 번 조회를 마친 뒤 이 범위에서 무작위로 쉬고 다시 조회한다.
-POLL_MIN_SECONDS = 500
-POLL_MAX_SECONDS = 1000
+POLL_MIN_SECONDS = 400
+POLL_MAX_SECONDS = 800
 
 def next_poll_delay():
     return random.randint(POLL_MIN_SECONDS, POLL_MAX_SECONDS)

@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import tennis_court_monitor_all as monitor
 from sungnam_client import (
-    AccessBlocked, BrowserLaunchError, LoginFailed, ManualLoginRequired, SessionExpired, SungnamClient, SungnamError,
-    parse_timetable, validate_timetable,
+    AccessBlocked, BrowserLaunchError, LoginFailed, ManualLoginRequired, OperationTimeout, SessionExpired,
+    SungnamClient, SungnamError, parse_timetable, validate_timetable,
 )
 
 
@@ -149,6 +149,68 @@ class BrowserTests(unittest.TestCase):
             self.client.wait(90)
         self.client.close()
         self.assertTrue(self.client.loop.is_closed())
+
+    def test_hung_browser_operation_is_cancelled_after_timeout(self):
+        async def hang():
+            await asyncio.sleep(90)
+        with self.assertRaises(OperationTimeout):
+            self.client._run(hang(), timeout=0.1)
+        self.assertIsNone(self.client._active_task)
+
+    def test_operation_ignoring_cancellation_is_abandoned_after_grace_period(self):
+        async def stubborn():
+            try:
+                await asyncio.sleep(90)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.5)
+        with patch("sungnam_client.CANCEL_GRACE_SECONDS", 0.1):
+            with self.assertRaises(OperationTimeout):
+                self.client._run(stubborn(), timeout=0.1)
+
+    def test_shutdown_request_still_cancels_operation_with_timeout(self):
+        async def wait_until_stopped():
+            self.client.loop.call_soon(self.client.request_stop)
+            await asyncio.sleep(90)
+        with self.assertRaises(asyncio.CancelledError):
+            self.client._run(wait_until_stopped(), timeout=60)
+
+    def test_hung_timetable_restarts_browser_for_next_scan(self):
+        async def hang(*args):
+            await asyncio.sleep(90)
+        browser = Mock(_process=None, aclose=AsyncMock())
+        self.client.browser = browser
+        self.client.authenticated = True
+        self.client._current_facility = "FAC26"
+        self.client._get_timetable = hang
+        with patch("sungnam_client.TIMETABLE_TIMEOUT", 0.1):
+            with self.assertRaises(OperationTimeout):
+                self.client.get_timetable("FAC26", "2026-11-10")
+        browser.aclose.assert_awaited_once()
+        self.assertIsNone(self.client.browser)
+        self.assertFalse(self.client.authenticated)
+        self.assertIsNone(self.client._current_facility)
+
+    def test_hung_browser_is_killed_when_graceful_close_fails(self):
+        async def hang(*args):
+            await asyncio.sleep(90)
+        process = Mock(returncode=None)
+        process.wait = AsyncMock(side_effect=lambda: asyncio.sleep(90))
+        self.client.browser = Mock(_process=process, send=AsyncMock(side_effect=lambda *a: asyncio.sleep(90)),
+                                   aclose=AsyncMock())
+        self.client._get_timetable = hang
+        with patch("sungnam_client.TIMETABLE_TIMEOUT", 0.1), patch("sungnam_client.RECOVERY_TIMEOUT", 0.1):
+            with self.assertRaises(OperationTimeout):
+                self.client.get_timetable("FAC26", "2026-11-10")
+        process.kill.assert_called()
+        self.assertIsNone(self.client.browser)
+
+    def test_manual_login_wait_has_no_overall_timeout(self):
+        async def login(*args):
+            return True
+        self.client._login = login
+        with patch.object(self.client, "_run", wraps=self.client._run) as run:
+            self.assertTrue(self.client.login("", ""))
+        self.assertIsNone(run.call_args.kwargs["timeout"])
 
     def test_manual_wait_survives_block_page_and_accepts_user_login(self):
         authenticated = {"url": "https://res.isdc.co.kr/index.do", "ready": True, "authenticated": True}
@@ -396,6 +458,21 @@ class ScanTests(unittest.TestCase):
             self.assertEqual(data["last_update"], "last-success")
             self.assertEqual(data["status"], "blocked")
             self.assertEqual(data["error"], "blocked")
+            self.session.wait.assert_called_once()
+            notify.assert_not_called()
+
+    def test_browser_timeout_keeps_data_and_retries_next_cycle(self):
+        old = [{"court": "last successful scan"}]
+        self.session.wait.side_effect = KeyboardInterrupt
+        with patch.multiple(monitor, _sn_courts=old, _sn_last_update="last-success"), \
+             patch.object(monitor, "sn_run_once", side_effect=OperationTimeout("hung")), \
+             patch.object(monitor, "_notify_if_changed") as notify:
+            with self.assertRaises(KeyboardInterrupt):
+                monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
+            data = monitor.build_sungnam_payload()
+            self.assertEqual(data["status"], "error")
+            self.assertEqual(data["all_courts"], old)
+            self.assertEqual(data["last_update"], "last-success")
             self.session.wait.assert_called_once()
             notify.assert_not_called()
 
