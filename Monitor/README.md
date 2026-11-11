@@ -142,6 +142,8 @@ Webpage로 결과를 보내려면 [Webpage로 결과 전송](#webpage로-결과-
 
 - 성남·용인: 한 번 조회를 마친 뒤 **120~300초(2~5분) 사이에서 무작위로** 쉬고 다시 조회
   (`tennis_court_monitor_all.py`의 `POLL_MIN_SECONDS` / `POLL_MAX_SECONDS`)
+- 성남: 페이지 이동·클릭·로그인 입력 앞과 시설·날짜 조회 사이에 **0.5~2초 무작위 지연**
+  (`sungnam_client.py`의 `HUMAN_DELAY_RANGE`)
 
 성남은 **Windows와 Linux에서 기본으로 Chrome을 백그라운드 실행하고 저장된 계정으로 자동 로그인**합니다.
 `auth.txt [sungnam]` 또는 계정 환경변수의 아이디·비밀번호를 로그인 입력란에 입력하고

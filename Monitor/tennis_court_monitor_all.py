@@ -40,7 +40,7 @@ from browser_background import default_profile_directory, supports_background
 from web_publisher import WebPublisher
 from sungnam_client import (
     SungnamClient, BrowserLaunchError, AccessBlocked, LoginFailed, ManualLoginRequired, SessionExpired,
-    parse_timetable as sn_parse_timetable,
+    HUMAN_DELAY_RANGE, parse_timetable as sn_parse_timetable,
 )
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -69,8 +69,8 @@ YN_TIME_API  = f"{YN_BASE_URL}/sports/selectRegistTimeByChosenDateFcltyRceptResv
 YN_PAGE_SIZE = 8
 YN_WORKERS   = 8
 # 성남·용인 모두 한 번 조회를 마친 뒤 이 범위에서 무작위로 쉬고 다시 조회한다.
-POLL_MIN_SECONDS = 400
-POLL_MAX_SECONDS = 800
+POLL_MIN_SECONDS = 300
+POLL_MAX_SECONDS = 600
 
 def next_poll_delay():
     return random.randint(POLL_MIN_SECONDS, POLL_MAX_SECONDS)
@@ -345,7 +345,7 @@ def _sn_scan(session, accounts, facilities, on_result=None):
 
             logging.info(f"[SN] {fac['name']} {date_str}: 예약가능 "
                          f"{sum(1 for s in avail_slots if 'ALL' in time_slots or any(sn_time_match(s['time'], t) for t in time_slots))}개")
-            time.sleep(0.1)
+            time.sleep(random.uniform(*HUMAN_DELAY_RANGE))
 
     return all_available, all_courts
 

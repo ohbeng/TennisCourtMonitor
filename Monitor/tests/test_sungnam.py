@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import tennis_court_monitor_all as monitor
 from sungnam_client import (
     AccessBlocked, BrowserLaunchError, LoginFailed, ManualLoginRequired, OperationTimeout, SessionExpired,
-    SungnamClient, SungnamError, parse_timetable, validate_timetable,
+    SungnamClient, SungnamError, _human_pause, parse_timetable, validate_timetable,
 )
 
 
@@ -97,6 +97,9 @@ class BrowserTests(unittest.TestCase):
         display = patch.dict(os.environ, {"DISPLAY": ":42"})
         display.start()
         self.addCleanup(display.stop)
+        pause = patch("sungnam_client._human_pause", new_callable=AsyncMock)
+        self.pause = pause.start()
+        self.addCleanup(pause.stop)
         self.client = SungnamClient("unused-test-profile", manual_login=True)
         self.client.page = Mock()
 
@@ -352,6 +355,21 @@ class BrowserTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "boom"):
             self.client._run(self.client._click("#x", element=element))
 
+    def test_click_waits_before_clicking(self):
+        order = []
+        self.pause.side_effect = lambda: order.append("pause")
+        element = Mock(click=AsyncMock(side_effect=lambda: order.append("click")))
+        self.client._run(self.client._click("#x", element=element))
+        self.assertEqual(order, ["pause", "click"])
+
+    def test_page_move_waits_before_loading(self):
+        order = []
+        self.pause.side_effect = lambda: order.append("pause")
+        self.client.browser = Mock(get=AsyncMock(side_effect=lambda url: order.append("get")),
+                                   _process=None, aclose=AsyncMock())
+        self.client._run(self.client._goto("https://example.test/"))
+        self.assertEqual(order, ["pause", "get"])
+
     def test_existing_timetable_popup_is_read_and_closed(self):
         parent = self.client.page
         parent.target.target_id = "parent"
@@ -404,6 +422,13 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(len(courts), 8)
         self.session.login.assert_called_once()
         self.session.close.assert_called_once()
+
+    def test_each_facility_date_is_followed_by_a_random_pause(self):
+        with patch.object(monitor.time, "sleep") as sleep:
+            monitor.sn_run_once(ACCOUNTS, FACILITIES)
+        delays = [call.args[0] for call in sleep.call_args_list]
+        self.assertEqual(len(delays), 4)
+        self.assertTrue(all(0.5 <= delay <= 2.0 for delay in delays))
 
     def test_existing_session_is_reused_across_scans(self):
         self.session.authenticated = True
@@ -525,6 +550,16 @@ class ScanTests(unittest.TestCase):
             notify.assert_not_called()
 
 
+class HumanPauseTests(unittest.TestCase):
+    def test_pause_is_random_between_half_and_two_seconds(self):
+        with patch("sungnam_client.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            for _ in range(200):
+                asyncio.run(_human_pause())
+        delays = [call.args[0] for call in sleep.await_args_list]
+        self.assertTrue(all(0.5 <= delay <= 2.0 for delay in delays))
+        self.assertGreater(len(set(delays)), 1)
+
+
 class CommandLineTests(unittest.TestCase):
     def test_poll_delay_is_random_between_two_and_five_minutes(self):
         with patch.object(monitor.random, "randint", return_value=200) as randint:
@@ -574,6 +609,9 @@ class AutoLoginTests(unittest.TestCase):
         display = patch.dict(os.environ, {"DISPLAY": ":42"})
         display.start()
         self.addCleanup(display.stop)
+        pause = patch("sungnam_client._human_pause", new_callable=AsyncMock)
+        self.pause = pause.start()
+        self.addCleanup(pause.stop)
         self.client = SungnamClient("unused-auto-test-profile", background=False)
         self.id_field = Mock(clear_input=AsyncMock(), send_keys=AsyncMock())
         self.password_field = Mock(clear_input=AsyncMock(), send_keys=AsyncMock())
@@ -594,6 +632,10 @@ class AutoLoginTests(unittest.TestCase):
         self.password_field.send_keys.assert_awaited_once_with("saved-password")
         self.button.click.assert_awaited_once()
         self.assertTrue(self.client.authenticated)
+
+    def test_login_pauses_before_page_load_each_field_and_button(self):
+        self.client.login("saved-user", "saved-password")
+        self.assertEqual(self.pause.await_count, 4)
 
     def test_existing_session_does_not_resubmit_credentials(self):
         self.client._wait_state = AsyncMock(return_value={"authenticated": True})
