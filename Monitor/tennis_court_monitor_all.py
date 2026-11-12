@@ -71,6 +71,8 @@ YN_WORKERS   = 8
 # 성남·용인 모두 한 번 조회를 마친 뒤 이 범위에서 무작위로 쉬고 다시 조회한다.
 POLL_MIN_SECONDS = 400
 POLL_MAX_SECONDS = 800
+# 세션이 오래 유지되지 않도록 이 횟수만큼 조회를 마칠 때마다 로그아웃하고 다음 조회에서 다시 로그인한다.
+SN_RELOGIN_EVERY_CYCLES = 5
 
 def next_poll_delay():
     return random.randint(POLL_MIN_SECONDS, POLL_MAX_SECONDS)
@@ -1002,9 +1004,12 @@ def sungnam_loop():
 def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
     global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error
     sn_prev_key = [""]
+    completed_cycles = 0
     while not _sn_stop_event.is_set():
         retry_delay = next_poll_delay()
         manual_login = getattr(session, "manual_login", False) is True
+        if not session.authenticated:
+            completed_cycles = 0
         try:
             _sn_begin_cycle(facilities)
             with _lock:
@@ -1027,6 +1032,11 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
                                 and sn_passes_notify(c, notify_facs)]
                 logging.info(f"[SN] 알림 대상 슬롯: {len(notify_slots)}개")
                 _notify_if_changed("[SN]", notify_slots, sn_prev_key, _sn_build_msg)
+            completed_cycles += 1
+            if completed_cycles >= SN_RELOGIN_EVERY_CYCLES and not manual_login:
+                logging.info("[SN] %s회 조회를 마쳐 로그아웃합니다. 다음 조회에서 다시 로그인합니다.", completed_cycles)
+                session.logout()
+                completed_cycles = 0
             logging.info("[SN] %s초 후 다시 조회합니다.", retry_delay)
         except Exception as e:
             with _lock:

@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -310,6 +312,81 @@ class BrowserTests(unittest.TestCase):
         self.client.get_timetable("FAC26", "2026-11-12")
         self.assertEqual([call.args[0] for call in self.client._open_facility.await_args_list],
                          ["FAC26", "FAC41", "FAC41", "FAC26"])
+
+    def test_court_cache_survives_restart_and_skips_probing(self):
+        with tempfile.TemporaryDirectory() as profile:
+            first = SungnamClient(profile, manual_login=True)
+            first._facility_groups = {"FAC26": "1", "FAC41": "1"}
+            first._date_facilities = {("FAC26", 5): "FAC41"}
+            first._save_court_cache()
+            first.close()
+            second = SungnamClient(profile, manual_login=True)
+            self.addCleanup(second.close)
+            self.assertEqual(second._facility_groups, {"FAC26": "1", "FAC41": "1"})
+            self.assertEqual(second._date_facilities, {("FAC26", 5): "FAC41"})
+            second.page = Mock()
+            second._open_facility = AsyncMock()
+            second._select_date = AsyncMock(return_value=True)
+            second._read_popup = AsyncMock(return_value=TIMETABLE)
+            second.get_timetable("FAC26", "2026-11-14")
+            second._open_facility.assert_awaited_once_with("FAC41")
+
+    def test_corrupt_court_cache_is_ignored(self):
+        with tempfile.TemporaryDirectory() as profile:
+            with open(os.path.join(profile, "sungnam_courts.json"), "w", encoding="utf-8") as f:
+                f.write("{broken")
+            client = SungnamClient(profile, manual_login=True)
+            self.addCleanup(client.close)
+            self.assertEqual((client._facility_groups, client._date_facilities), ({}, {}))
+
+    def test_court_names_limit_probing_to_the_matching_day_kind(self):
+        names = {
+            "FAC12": "(평일)당일예약 1번 코트", "FAC41": "1번 코트(일요일)", "FAC26": "1번코트(평일)",
+            "FAC45": "2번 코트(일요일)", "FAC44": "2번코트(토요일,공휴일)", "FAC24": "3번 코트(일요일)",
+            "FAC46": "당일예약 1번코트(토요일,공휴일)",
+        }
+        self.client._facility_groups = {code: "1" for code in names}
+        self.client._facility_names = names
+        self.client._open_facility = AsyncMock()
+        self.client._select_date = AsyncMock(return_value=False)
+        self.client._read_popup = AsyncMock()
+        self.client.get_timetable("FAC26", "2026-11-15")
+        self.assertEqual([call.args[0] for call in self.client._open_facility.await_args_list],
+                         ["FAC41", "FAC45", "FAC24"])
+
+    def test_saturday_opens_the_saturday_court_first_and_remembers_it(self):
+        names = {"FAC26": "1번코트(평일)", "FAC41": "1번 코트(일요일)", "FAC44": "2번코트(토요일,공휴일)"}
+        self.client._facility_groups = {code: "1" for code in names}
+        self.client._facility_names = names
+        self.client._open_facility = AsyncMock()
+        self.client._select_date = AsyncMock(return_value=True)
+        self.client._read_popup = AsyncMock(return_value=TIMETABLE)
+        self.client.get_timetable("FAC26", "2026-11-14")
+        self.client._open_facility.assert_awaited_once_with("FAC44")
+        self.assertEqual(self.client._date_facilities, {("FAC26", 5): "FAC44"})
+
+    def test_weekday_holiday_falls_back_to_holiday_court(self):
+        names = {"FAC26": "1번코트(평일)", "FAC44": "2번코트(토요일,공휴일)", "FAC41": "1번 코트(일요일)"}
+        self.client._facility_groups = {code: "1" for code in names}
+        self.client._facility_names = names
+        self.client._open_facility = AsyncMock()
+        self.client._select_date = AsyncMock(side_effect=[False, True])
+        self.client._read_popup = AsyncMock(return_value=TIMETABLE)
+        self.client.get_timetable("FAC26", "2026-11-12")
+        self.assertEqual([call.args[0] for call in self.client._open_facility.await_args_list], ["FAC26", "FAC44"])
+
+    def test_fully_closed_date_is_not_probed_again_until_recheck_time(self):
+        self.client._facility_groups = {"FAC26": "1", "FAC41": "1", "FAC44": "1"}
+        self.client._open_facility = AsyncMock()
+        self.client._select_date = AsyncMock(return_value=False)
+        self.client._read_popup = AsyncMock()
+        self.client.get_timetable("FAC26", "2026-11-15")
+        self.assertEqual(self.client._open_facility.await_count, 3)
+        self.client.get_timetable("FAC26", "2026-11-15")
+        self.assertEqual(self.client._open_facility.await_count, 3)
+        with patch("sungnam_client.time.monotonic", return_value=time.monotonic() + 1801):
+            self.client.get_timetable("FAC26", "2026-11-15")
+        self.assertEqual(self.client._open_facility.await_count, 6)
 
     def test_all_disabled_courts_return_no_times_without_opening_popup(self):
         self.client._facility_groups = {"FAC26": "1", "FAC41": "1"}

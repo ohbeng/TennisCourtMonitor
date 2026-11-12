@@ -8,6 +8,7 @@ import os
 import random
 import re
 import sys
+import time
 from urllib.parse import urlsplit
 
 import nodriver as uc
@@ -23,8 +24,11 @@ LOGIN_TIMEOUT = 180
 TIMETABLE_TIMEOUT = 300
 CANCEL_GRACE_SECONDS = 10
 RECOVERY_TIMEOUT = 20
+# 같은 시설의 모든 코트 달력이 닫혀 있던 날짜는 이 시간 동안 다시 탐색하지 않는다.
+# 코트가 15개인 시설에서는 한 번 탐색에 수십 번 페이지를 이동하기 때문이다.
+CLOSED_DATE_RECHECK_SECONDS = 1800
 # 자동화로 탐지되지 않도록 클릭·페이지 이동·입력 사이에 쉬는 무작위 시간(초).
-HUMAN_DELAY_RANGE = (1.0, 4.0)
+HUMAN_DELAY_RANGE = (0.5, 2.0)
 
 
 async def _human_pause():
@@ -154,6 +158,41 @@ class SungnamClient:
         self._manual_waiting = False
         self._stop_requested = False
         self._active_task = None
+        self._facility_groups = {}
+        self._facility_names = {}
+        self._date_facilities = {}
+        self._closed_dates = {}
+        self._load_court_cache()
+
+    @property
+    def _court_cache_path(self):
+        return os.path.join(self.profile, "sungnam_courts.json")
+
+    def _load_court_cache(self):
+        """찾아 둔 코트 그룹·이름·요일별 코트 코드를 읽어 재시작 후 탐색 이동을 건너뛴다."""
+        try:
+            with open(self._court_cache_path, encoding="utf-8") as f:
+                data = json.load(f)
+            groups = {str(k): str(v) for k, v in data.get("groups", {}).items()}
+            names = {str(k): str(v) for k, v in data.get("names", {}).items()}
+            representatives = {}
+            for key, value in data.get("representatives", {}).items():
+                facility_id, day_kind = key.rsplit("|", 1)
+                representatives[facility_id, int(day_kind)] = str(value)
+        except (OSError, ValueError, AttributeError):
+            return
+        self._facility_groups, self._facility_names, self._date_facilities = groups, names, representatives
+
+    def _save_court_cache(self):
+        if not os.path.isdir(self.profile):
+            return
+        data = {"groups": self._facility_groups, "names": self._facility_names,
+                "representatives": {f"{fac}|{kind}": value for (fac, kind), value in self._date_facilities.items()}}
+        try:
+            with open(self._court_cache_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except OSError as exc:
+            logging.warning("[SN] 코트 코드 캐시를 저장하지 못했습니다: %s", exc)
 
     def _run(self, coroutine, *, closing=False, timeout=None):
         if self._stop_requested and not closing:
@@ -393,6 +432,33 @@ class SungnamClient:
             raise
         return self.authenticated
 
+    async def _logout(self):
+        if self.page is None:
+            return
+        # 로그아웃 링크를 누른 뒤에도 쿠키가 남아 있으면 다음 로그인이 기존 세션을 그대로 재사용하므로
+        # 로그아웃 요청이 실패한 경우를 포함해 항상 브라우저 쿠키까지 지운다.
+        try:
+            link = await self.page.select('a[href*="logout.do"]', timeout=5)
+            if link is not None:
+                await self._click('a[href*="logout.do"]', element=link)
+                await asyncio.sleep(1)
+        except Exception as exc:
+            logging.warning("[SN] 로그아웃 링크 클릭에 실패했습니다: %s", exc)
+        if self.browser is not None:
+            await self.browser.cookies.clear()
+
+    def logout(self):
+        """주기적으로 세션을 끊는다. 다음 조회는 새로 로그인한다."""
+        try:
+            self._run(self._logout(), timeout=30)
+        except OperationTimeout:
+            self._recover_after_timeout()
+        except Exception as exc:
+            logging.warning("[SN] 로그아웃 처리 중 오류가 발생했습니다: %s", exc)
+        finally:
+            self.authenticated = False
+            self._current_facility = None
+
     async def _wait_element(self, selector, *, path=None, timeout=30):
         deadline = self.loop.time() + timeout
         last_url = None
@@ -459,9 +525,16 @@ class SungnamClient:
                 await self._wait_element(".tennisGroup", path="facilityList.do")
             await self._click(f'.tennisGroup[id={json.dumps(group)}]', path="facilityList.do")
             await self._wait_element(".facilityInfo", path="tennisList.do")
-            ids = await self._json("JSON.stringify(Array.from(document.querySelectorAll('.facilityInfo')).map(x=>x.id))")
+            items = await self._json(
+                "JSON.stringify(Array.from(document.querySelectorAll('.facilityInfo')).map(x=>({id:x.id,"
+                "name:x.innerText.split('예약방법')[0].trim().replace(/\\s+/g,' ')})))")
+            ids = [item["id"] for item in items]
+            before = dict(group_map), dict(self._facility_names)
             group_map.update({fac_id: group for fac_id in ids})
             self._facility_groups = group_map
+            self._facility_names.update({item["id"]: item["name"] for item in items})
+            if (group_map, self._facility_names) != before:
+                self._save_court_cache()
             if facility_id not in ids:
                 continue
             await self._click(f'.facilityInfo[id={json.dumps(facility_id)}]', path="tennisList.do")
@@ -562,33 +635,62 @@ class SungnamClient:
             if popup is not None and not keep_popup:
                 await popup.close()
 
+    _DAY_LABELS = {0: "평일", 5: "토요일", 6: "일요일"}
+
+    def _court_candidates(self, facility_id, day_kind):
+        """조회할 코트 코드를 확인할 순서대로 돌려준다.
+
+        탄천처럼 코트마다 (평일)/(토요일,공휴일)/(일요일) 코드가 따로 있는 시설은 사이트의
+        코트 이름으로 해당 요일의 코트만 고른다. 이름을 모르면 지정 코트부터 같은 그룹을 차례로 본다.
+        """
+        group = self._facility_groups.get(facility_id)
+        codes = [facility_id] + [code for code, grp in self._facility_groups.items()
+                                 if group is not None and grp == group and code != facility_id]
+        names, label = self._facility_names, self._DAY_LABELS[day_kind]
+        regular = [c for c in codes if label in names.get(c, "") and "당일예약" not in names[c]]
+        if regular:
+            same_day = [c for c in codes if label in names.get(c, "") and "당일예약" in names[c]]
+            # 평일 공휴일은 토요일·공휴일 코트의 달력이 열린다.
+            holiday = [c for c in codes if day_kind == 0 and "공휴일" in names.get(c, "") and "당일예약" not in names[c]]
+            ordered = regular + same_day + holiday
+        else:
+            ordered = codes
+        representative = self._date_facilities.get((facility_id, day_kind))
+        if representative:
+            ordered = [representative] + [c for c in ordered if c != representative]
+        return ordered
+
     async def _get_timetable(self, facility_id, date_str):
         if self.page is None:
             raise SessionExpired("성남 로그인이 필요합니다.")
         date = "-".join(str(int(part)) for part in date_str.split("-"))
-        # 평일/토요일/일요일 코트 코드는 날짜가 아니라 요일 종류별로 정해지므로,
-        # 한 번 찾은 코트를 같은 종류의 다른 날짜에도 써서 시설 목록 재탐색(페이지 이동)을 줄인다.
         weekday = datetime.date(*map(int, date_str.split("-"))).weekday()
         day_kind = weekday if weekday >= 5 else 0
-        representatives = getattr(self, "_date_facilities", {})
-        first = representatives.get((facility_id, day_kind), facility_id)
-        await self._open_facility(first)
-        if await self._select_date(date):
-            return await self._read_popup()
-        if getattr(self, "_date_closed", False):
+        if self._closed_dates.get((facility_id, date), 0) > time.monotonic():
             return "<p>이용가능한 시간이 없습니다</p>"
-        # 탄천 등은 평일/토요일/일요일 코트 코드가 따로 있다.
-        # 지정 코트의 달력이 닫혀 있어도 같은 시설의 다른 코트 달력을 확인한다.
-        group_map = getattr(self, "_facility_groups", {})
-        group = group_map.get(facility_id)
-        siblings = [fac_id for fac_id, group_id in group_map.items()
-                    if group is not None and group_id == group and fac_id != first]
-        for candidate in siblings:
+        tried = []
+        while True:
+            # 시설을 처음 열면 그룹과 코트 이름을 알게 되므로 후보를 매번 다시 계산한다.
+            candidates = [c for c in self._court_candidates(facility_id, day_kind) if c not in tried]
+            if not candidates:
+                break
+            candidate = candidates[0]
+            if tried:
+                logging.info("[SN] %s %s: 달력이 닫혀 있어 같은 시설의 다른 코트(%s)를 확인합니다.", facility_id, date_str, candidate)
             await self._open_facility(candidate)
             if await self._select_date(date):
-                representatives[facility_id, day_kind] = candidate
-                self._date_facilities = representatives
+                representative = self._date_facilities.get((facility_id, day_kind))
+                if candidate == facility_id and representative is not None:
+                    del self._date_facilities[facility_id, day_kind]
+                    self._save_court_cache()
+                elif candidate != facility_id and representative != candidate:
+                    self._date_facilities[facility_id, day_kind] = candidate
+                    self._save_court_cache()
                 return await self._read_popup()
+            if not tried and getattr(self, "_date_closed", False):
+                return "<p>이용가능한 시간이 없습니다</p>"
+            tried.append(candidate)
+        self._closed_dates[facility_id, date] = time.monotonic() + CLOSED_DATE_RECHECK_SECONDS
         return "<p>이용가능한 시간이 없습니다</p>"
 
     def get_timetable(self, facility_id, date_str):

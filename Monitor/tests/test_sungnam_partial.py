@@ -150,6 +150,35 @@ class PartialSungnamTests(unittest.TestCase):
         self.assertTrue(all(key not in collected for key in requested[:14]))
         self.assertEqual(set(requested[14:]), collected)
 
+    def test_session_is_logged_out_every_fifth_completed_cycle(self):
+        self.session.authenticated = True
+        self.session.get_timetable.return_value = TIMETABLE
+        waits = []
+        def wait(seconds):
+            waits.append(seconds)
+            if len(waits) == 6:
+                raise KeyboardInterrupt
+        self.session.wait.side_effect = wait
+        logout_after = []
+        self.session.logout.side_effect = lambda: logout_after.append(len(waits))
+        with patch.object(monitor, "SN_RELOGIN_EVERY_CYCLES", 5), self.assertRaises(KeyboardInterrupt):
+            monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, [])
+        self.assertEqual(logout_after, [4])
+
+    def test_manual_login_session_is_never_logged_out_automatically(self):
+        self.session.authenticated = True
+        self.session.manual_login = True
+        self.session.get_timetable.return_value = TIMETABLE
+        waits = []
+        def wait(seconds):
+            waits.append(seconds)
+            if len(waits) == 3:
+                raise KeyboardInterrupt
+        self.session.wait.side_effect = wait
+        with patch.object(monitor, "SN_RELOGIN_EVERY_CYCLES", 2), self.assertRaises(KeyboardInterrupt):
+            monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, [])
+        self.session.logout.assert_not_called()
+
 
 
 if __name__ == "__main__":
