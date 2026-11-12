@@ -282,59 +282,65 @@ def _sn_scan(session, accounts, facilities, on_result=None):
     today         = datetime.now(KST)
     relogin_used  = False
 
-    for fac in facilities:
-        for i in range(4):
-            date       = today + timedelta(days=i)
-            date_str   = date.strftime("%Y-%m-%d")
-            is_weekend = date.weekday() >= 5
-            dow        = _DOW_KO[date.weekday()]
-            time_slots = fac["weekend_times"] if is_weekend else fac["weekday_times"]
-            if not time_slots:
-                continue
+    with _lock:
+        last_collected = {key: value["last_update"] for key, value in _sn_collected.items()}
+    # 차단으로 중간에 끊겨도 다음 조회는 아직 못 읽었거나 가장 오래된 구간부터 이어서 한다.
+    pairs = sorted(((fac, i) for fac in facilities for i in range(4)),
+                   key=lambda p: last_collected.get(
+                       (p[0]["id"], (today + timedelta(days=p[1])).strftime("%Y-%m-%d")), ""))
 
-            try:
-                html = sn_get_timetable(session, fac["id"], date_str)
-            except SessionExpired:
-                if relogin_used:
-                    raise SessionExpired("성남 재로그인 후에도 세션이 만료되어 이번 조회를 중단합니다.")
-                relogin_used = True
-                logging.warning("[SN] 세션 만료 확인 — 이번 조회에서 1회만 재로그인합니다.")
-                if not _sn_ensure_login(session, accounts):
-                    raise LoginFailed("성남 세션 복구 실패")
-                html = sn_get_timetable(session, fac["id"], date_str)
+    for fac, i in pairs:
+        date       = today + timedelta(days=i)
+        date_str   = date.strftime("%Y-%m-%d")
+        is_weekend = date.weekday() >= 5
+        dow        = _DOW_KO[date.weekday()]
+        time_slots = fac["weekend_times"] if is_weekend else fac["weekday_times"]
+        if not time_slots:
+            continue
 
-            avail_slots, all_slot_list = sn_parse_timetable(html)
-            courts_start, available_start = len(all_courts), len(all_available)
+        try:
+            html = sn_get_timetable(session, fac["id"], date_str)
+        except SessionExpired:
+            if relogin_used:
+                raise SessionExpired("성남 재로그인 후에도 세션이 만료되어 이번 조회를 중단합니다.")
+            relogin_used = True
+            logging.warning("[SN] 세션 만료 확인 — 이번 조회에서 1회만 재로그인합니다.")
+            if not _sn_ensure_login(session, accounts):
+                raise LoginFailed("성남 세션 복구 실패")
+            html = sn_get_timetable(session, fac["id"], date_str)
 
-            for slot in all_slot_list:
-                all_courts.append({
-                    "date":             date_str,
-                    "day_of_week":      dow,
-                    "facility_name":    fac["name"],
-                    "fac_id":           fac["id"],
-                    "court":            slot["court"],
-                    "time":             slot["time"],
-                    "is_available":     slot["is_available"],
-                    "reservation_name": slot["reservation_name"],
+        avail_slots, all_slot_list = sn_parse_timetable(html)
+        courts_start, available_start = len(all_courts), len(all_available)
+
+        for slot in all_slot_list:
+            all_courts.append({
+                "date":             date_str,
+                "day_of_week":      dow,
+                "facility_name":    fac["name"],
+                "fac_id":           fac["id"],
+                "court":            slot["court"],
+                "time":             slot["time"],
+                "is_available":     slot["is_available"],
+                "reservation_name": slot["reservation_name"],
+            })
+
+        for slot in avail_slots:
+            if "ALL" in time_slots or any(sn_time_match(slot["time"], t) for t in time_slots):
+                all_available.append({
+                    "date":          date_str,
+                    "day_of_week":   dow,
+                    "facility_name": fac["name"],
+                    "fac_id":        fac["id"],
+                    "court":         slot["court"],
+                    "time":          slot["time"],
                 })
 
-            for slot in avail_slots:
-                if "ALL" in time_slots or any(sn_time_match(slot["time"], t) for t in time_slots):
-                    all_available.append({
-                        "date":          date_str,
-                        "day_of_week":   dow,
-                        "facility_name": fac["name"],
-                        "fac_id":        fac["id"],
-                        "court":         slot["court"],
-                        "time":          slot["time"],
-                    })
+        if on_result is not None:
+            on_result(fac["id"], date_str, all_available[available_start:], all_courts[courts_start:])
 
-            if on_result is not None:
-                on_result(fac["id"], date_str, all_available[available_start:], all_courts[courts_start:])
-
-            logging.info(f"[SN] {fac['name']} {date_str}: 예약가능 "
-                         f"{sum(1 for s in avail_slots if 'ALL' in time_slots or any(sn_time_match(s['time'], t) for t in time_slots))}개")
-            time.sleep(random.uniform(*HUMAN_DELAY_RANGE))
+        logging.info(f"[SN] {fac['name']} {date_str}: 예약가능 "
+                     f"{sum(1 for s in avail_slots if 'ALL' in time_slots or any(sn_time_match(s['time'], t) for t in time_slots))}개")
+        time.sleep(random.uniform(*HUMAN_DELAY_RANGE))
 
     return all_available, all_courts
 
@@ -510,9 +516,9 @@ def sn_load_notify_table():
                 facs.append({"id": m.group(1), "name": m.group(2),
                              "weekday_times": [], "weekend_times": [],
                              "weekday_notify": [], "weekend_notify": []})
-        elif line == "주중":
+        elif text == "주중":
             section = "weekday"
-        elif line == "주말":
+        elif text == "주말":
             section = "weekend"
         elif current_fac and text.lower() == "all":
             facs[-1][f"{section}_times"] = ["ALL"]
@@ -556,8 +562,8 @@ def yn_load_notify_table():
         if cur_gu is None:
             continue
         text, telegram = _split_telegram_flag(line)
-        if line in ("주중", "주말"):
-            section = "weekday" if line == "주중" else "weekend"
+        if text in ("주중", "주말"):
+            section = "weekday" if text == "주중" else "weekend"
             rules.setdefault(cur_gu, {"weekday": [], "weekend_all": False,
                                       "notify_weekday": [], "notify_weekend_all": False})
         elif section == "weekday" and (text.startswith("~") or text.endswith("~")):

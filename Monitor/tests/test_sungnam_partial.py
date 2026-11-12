@@ -41,7 +41,8 @@ class PartialSungnamTests(unittest.TestCase):
 
     def test_mid_scan_block_retains_already_collected_timetables(self):
         self.session.get_timetable.side_effect = [TIMETABLE] * 4 + [EMPTY_TIMETABLE, AccessBlocked("blocked")]
-        with patch.object(monitor, "_notify_if_changed") as notify:
+        self.session.wait.side_effect = KeyboardInterrupt
+        with patch.object(monitor, "_notify_if_changed") as notify, self.assertRaises(KeyboardInterrupt):
             monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
         data = self.data()
         self.assertEqual(data["status"], "blocked")
@@ -64,7 +65,9 @@ class PartialSungnamTests(unittest.TestCase):
             self.assertEqual(len(data["all_courts"]), 2)
             raise AccessBlocked("blocked")
         self.session.get_timetable.side_effect = get_timetable
-        monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, [])
+        self.session.wait.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, [])
         self.assertEqual(len(self.data()["all_courts"]), 2)
 
     def test_completed_cycle_reports_full_coverage(self):
@@ -129,6 +132,24 @@ class PartialSungnamTests(unittest.TestCase):
         self.assertEqual(len(data["all_courts"]), 1)
         self.assertEqual(data["all_courts"][0]["time"], "19:00 ~ 20:50")
         self.assertEqual(data["progress"]["completed"], 1)
+
+    def test_next_scan_starts_with_uncollected_timetables(self):
+        monitor._sn_begin_cycle(FACILITIES)
+        for facility_id in ("FAC26", "FAC61"):
+            row = self.row(facility_id, "07:00 ~ 08:50")
+            monitor._sn_publish_result(facility_id, self.today, [row], [row])
+        requested = []
+        def get_timetable(fac_id, date):
+            requested.append((fac_id, date))
+            return TIMETABLE
+        self.session.get_timetable.side_effect = get_timetable
+        self.session.authenticated = True
+        monitor.sn_run_once(ACCOUNTS, FACILITIES, session=self.session)
+        collected = {("FAC26", self.today), ("FAC61", self.today)}
+        self.assertEqual(len(requested), 16)
+        self.assertTrue(all(key not in collected for key in requested[:14]))
+        self.assertEqual(set(requested[14:]), collected)
+
 
 
 if __name__ == "__main__":

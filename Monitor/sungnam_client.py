@@ -1,6 +1,7 @@
 """성남 예약 사이트의 로그인과 시간표 조회를 같은 Chrome 세션에서 수행한다."""
 
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -565,8 +566,12 @@ class SungnamClient:
         if self.page is None:
             raise SessionExpired("성남 로그인이 필요합니다.")
         date = "-".join(str(int(part)) for part in date_str.split("-"))
+        # 평일/토요일/일요일 코트 코드는 날짜가 아니라 요일 종류별로 정해지므로,
+        # 한 번 찾은 코트를 같은 종류의 다른 날짜에도 써서 시설 목록 재탐색(페이지 이동)을 줄인다.
+        weekday = datetime.date(*map(int, date_str.split("-"))).weekday()
+        day_kind = weekday if weekday >= 5 else 0
         representatives = getattr(self, "_date_facilities", {})
-        first = representatives.get((facility_id, date), facility_id)
+        first = representatives.get((facility_id, day_kind), facility_id)
         await self._open_facility(first)
         if await self._select_date(date):
             return await self._read_popup()
@@ -581,7 +586,7 @@ class SungnamClient:
         for candidate in siblings:
             await self._open_facility(candidate)
             if await self._select_date(date):
-                representatives[facility_id, date] = candidate
+                representatives[facility_id, day_kind] = candidate
                 self._date_facilities = representatives
                 return await self._read_popup()
         return "<p>이용가능한 시간이 없습니다</p>"

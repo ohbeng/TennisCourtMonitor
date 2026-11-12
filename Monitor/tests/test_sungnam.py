@@ -300,6 +300,17 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in self.client._open_facility.await_args_list],
                          ["FAC26", "FAC41"])
 
+    def test_court_found_for_a_weekday_kind_is_reused_for_other_dates_of_that_kind(self):
+        self.client._facility_groups = {"FAC26": "1", "FAC41": "1"}
+        self.client._open_facility = AsyncMock()
+        self.client._select_date = AsyncMock(side_effect=[False, True, True, True])
+        self.client._read_popup = AsyncMock(return_value=TIMETABLE)
+        self.client.get_timetable("FAC26", "2026-11-14")
+        self.client.get_timetable("FAC26", "2026-11-21")
+        self.client.get_timetable("FAC26", "2026-11-12")
+        self.assertEqual([call.args[0] for call in self.client._open_facility.await_args_list],
+                         ["FAC26", "FAC41", "FAC41", "FAC26"])
+
     def test_all_disabled_courts_return_no_times_without_opening_popup(self):
         self.client._facility_groups = {"FAC26": "1", "FAC41": "1"}
         self.client._open_facility = AsyncMock()
