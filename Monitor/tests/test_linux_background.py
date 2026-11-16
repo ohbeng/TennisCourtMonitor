@@ -70,6 +70,8 @@ class LinuxLaunchTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("--headless", " ".join(arguments))
                 self.assertTrue(spawn.call_args.kwargs["start_new_session"])
                 self.assertNotIn("WAYLAND_DISPLAY", spawn.call_args.kwargs["env"])
+                self.assertEqual(spawn.call_args.kwargs["env"]["TZ"], "Asia/Seoul")
+                self.assertNotEqual(os.environ.get("TZ"), "Asia/Seoul")
                 self.assertEqual(os.environ["DISPLAY"], ":7")
                 self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-0")
             finally:

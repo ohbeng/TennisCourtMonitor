@@ -5,6 +5,8 @@ import os
 import shutil
 import signal
 
+from browser_background import SITE_TIMEZONE
+
 
 class _CapturedStderr:
     def __init__(self):
@@ -95,6 +97,9 @@ class LinuxBackgroundDisplay:
         # 전역 DISPLAY는 바꾸지 않아 다른 스레드/앱의 화면에 영향을 주지 않는다.
         environment = os.environ.copy()
         environment.pop("WAYLAND_DISPLAY", None)
+        # 성남 예약 사이트의 달력 스크립트는 예약 오픈 시각을 브라우저의 현재 시간대로 해석한다.
+        # 서버가 한국 시간대가 아니면 새 날짜가 몇 시간 늦게 열린 것으로 보이므로 Chrome만 한국 시간으로 실행한다.
+        environment["TZ"] = SITE_TIMEZONE
         process = await asyncio.create_subprocess_exec(
             self._runner, "--auto-servernum", "--error-file=/dev/stderr",
             "--server-args=-screen 0 1920x1080x24 -nolisten tcp",

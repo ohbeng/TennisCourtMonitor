@@ -73,9 +73,30 @@ POLL_MIN_SECONDS = 400
 POLL_MAX_SECONDS = 800
 # 세션이 오래 유지되지 않도록 이 횟수만큼 조회를 마칠 때마다 로그아웃하고 다음 조회에서 다시 로그인한다.
 SN_RELOGIN_EVERY_CYCLES = 5
+# 성남 사이트는 KST 00:00~07:00에 조회를 막는다. 조회가 00:00에 걸치지 않도록 23:50부터 쉬고,
+# 07:00 직후에 바로 접속하지 않도록 무작위로 조금 더 기다린 뒤 다시 조회한다.
+SN_QUIET_START = (23, 50)
+SN_QUIET_END_HOUR = 7
+SN_RESUME_DELAY_RANGE = (60, 180)
 
 def next_poll_delay():
     return random.randint(POLL_MIN_SECONDS, POLL_MAX_SECONDS)
+
+
+def sn_quiet_wait_seconds(now=None):
+    """성남 조회를 쉬어야 하는 시간이면 07:00까지 남은 초를, 아니면 0을 돌려준다."""
+    now = now or datetime.now(KST)
+    minute_of_day = now.hour * 60 + now.minute
+    if SN_QUIET_END_HOUR * 60 <= minute_of_day < SN_QUIET_START[0] * 60 + SN_QUIET_START[1]:
+        return 0
+    resume = now.replace(hour=SN_QUIET_END_HOUR, minute=0, second=0, microsecond=0)
+    if now >= resume:
+        resume += timedelta(days=1)
+    return (resume - now).total_seconds()
+
+
+class QuietHours(Exception):
+    """조회 도중 성남 조회 제한 시간이 되어 이번 조회를 멈춘다."""
 
 NODRIVER_PROFILE = default_profile_directory(_HERE)
 SN_MANUAL_LOGIN = False
@@ -292,6 +313,8 @@ def _sn_scan(session, accounts, facilities, on_result=None):
                        (p[0]["id"], (today + timedelta(days=p[1])).strftime("%Y-%m-%d")), ""))
 
     for fac, i in pairs:
+        if sn_quiet_wait_seconds() > 0:
+            raise QuietHours()
         date       = today + timedelta(days=i)
         date_str   = date.strftime("%Y-%m-%d")
         is_weekend = date.weekday() >= 5
@@ -1001,11 +1024,34 @@ def sungnam_loop():
                 _sn_client = None
 
 
+def _sn_wait_quiet_hours(session, seconds):
+    """조회 제한 시간 동안 사이트에 접속하지 않고 기다린다. 수집한 시간표는 그대로 둔다."""
+    global _sn_status, _sn_error
+    delay = seconds + random.uniform(*SN_RESUME_DELAY_RANGE)
+    with _lock:
+        _sn_status = "paused"
+        _sn_error = "성남 사이트의 조회 제한 시간(00:00~07:00)입니다. 07:00 이후 다시 조회합니다."
+    logging.info("[SN] 조회 제한 시간(KST 00:00~07:00)이라 조회를 쉽니다. %s초 후 다시 확인합니다.", int(delay))
+    if getattr(session, "manual_login", False) is not True:
+        # 제한 시간 전이면 로그아웃해 두고, 이미 제한 시간이면 요청 없이 다음 조회에서 새로 로그인한다.
+        if datetime.now(KST).hour == 23:
+            session.logout()
+        session.authenticated = False
+    session.wait(delay)
+    with _lock:
+        _sn_error = ""
+
+
 def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
     global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error
     sn_prev_key = [""]
     completed_cycles = 0
     while not _sn_stop_event.is_set():
+        quiet_seconds = sn_quiet_wait_seconds()
+        if quiet_seconds > 0:
+            completed_cycles = 0
+            _sn_wait_quiet_hours(session, quiet_seconds)
+            continue
         retry_delay = next_poll_delay()
         manual_login = getattr(session, "manual_login", False) is True
         if not session.authenticated:
@@ -1038,6 +1084,9 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
                 session.logout()
                 completed_cycles = 0
             logging.info("[SN] %s초 후 다시 조회합니다.", retry_delay)
+        except QuietHours:
+            logging.info("[SN] 조회 제한 시간이 되어 이번 조회를 멈춥니다. 이미 읽은 시간표는 유지합니다.")
+            continue
         except Exception as e:
             with _lock:
                 _sn_status = ("blocked" if isinstance(e, AccessBlocked) else

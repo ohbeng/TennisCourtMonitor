@@ -407,6 +407,29 @@ class BrowserTests(unittest.TestCase):
         self.assertTrue(self.client._date_closed)
         element.click.assert_not_awaited()
 
+    def test_unopened_date_logs_one_summary_line(self):
+        self.client._facility_groups = {"FAC26": "1", "FAC41": "1"}
+        self.client._open_facility = AsyncMock()
+        states = iter(["ui-state-default spandate notusedate", "ui-state-default spandate notusedate"])
+
+        async def select_date(date):
+            self.client._date_closed = False
+            self.client._date_state = next(states)
+            self.client._date_diag = {"inputs": {"inUseEndDate": "2026-11-18"}, "days": "18U 19N"}
+            return False
+        self.client._select_date = select_date
+        with self.assertLogs(level="INFO") as logs:
+            html = self.client.get_timetable("FAC26", "2026-11-19")
+        self.assertEqual(parse_timetable(html), ([], []))
+        self.assertEqual(len(logs.output), 2)
+        self.assertIn("2개 코트 모두 예약 오픈 전", logs.output[0])
+        self.assertIn("달력 진단", logs.output[1])
+        self.assertIn("2026-11-18", logs.output[1])
+
+    def test_calendar_diagnostics_never_breaks_the_scan(self):
+        self.client._json = AsyncMock(side_effect=RuntimeError("page gone"))
+        self.assertIsNone(self.client._run(self.client._calendar_diagnostics()))
+
     def test_closed_facility_does_not_scan_other_court_pages(self):
         self.client._facility_groups = {"FAC61": "5", "FAC62": "5"}
         self.client._date_closed = True
@@ -499,8 +522,11 @@ class ScanTests(unittest.TestCase):
         self.make_session.start()
         self.sleep = patch.object(monitor.time, "sleep")
         self.sleep.start()
+        self.quiet = patch.object(monitor, "sn_quiet_wait_seconds", return_value=0)
+        self.quiet.start()
 
     def tearDown(self):
+        self.quiet.stop()
         self.sleep.stop()
         self.make_session.stop()
 
@@ -648,6 +674,74 @@ class HumanPauseTests(unittest.TestCase):
         self.assertGreater(len(set(delays)), 1)
 
 
+class QuietHoursTests(unittest.TestCase):
+    def kst(self, hour, minute=0):
+        return monitor.datetime(2026, 11, 16, hour, minute, tzinfo=monitor.KST)
+
+    def test_site_blocked_hours_are_quiet_until_seven(self):
+        for hour, minute, expected in ((0, 0, 7 * 3600), (3, 30, 3.5 * 3600), (6, 59, 60),
+                                       (23, 50, 7 * 3600 + 600), (23, 59, 7 * 3600 + 60)):
+            with self.subTest(hour=hour, minute=minute):
+                self.assertEqual(monitor.sn_quiet_wait_seconds(self.kst(hour, minute)), expected)
+
+    def test_other_hours_are_not_quiet(self):
+        for hour, minute in ((7, 0), (12, 0), (23, 49)):
+            with self.subTest(hour=hour, minute=minute):
+                self.assertEqual(monitor.sn_quiet_wait_seconds(self.kst(hour, minute)), 0)
+
+    def test_loop_does_not_scan_during_quiet_hours_and_keeps_data(self):
+        session = Mock(authenticated=True, manual_login=False)
+        session.wait.side_effect = KeyboardInterrupt
+        old = [{"court": "last successful scan"}]
+        with patch.multiple(monitor, _sn_courts=old, _sn_last_update="last-success", _sn_status="ok", _sn_error=""), \
+             patch.object(monitor, "sn_quiet_wait_seconds", return_value=3600), \
+             patch.object(monitor.random, "uniform", return_value=90), \
+             patch.object(monitor, "sn_run_once") as scan, \
+             patch.object(monitor, "_sn_begin_cycle") as begin:
+            with self.assertRaises(KeyboardInterrupt):
+                monitor._sungnam_monitor_loop(session, ACCOUNTS, FACILITIES, [])
+            data = monitor.build_sungnam_payload()
+        scan.assert_not_called()
+        begin.assert_not_called()
+        session.wait.assert_called_once_with(3690)
+        self.assertEqual(data["status"], "paused")
+        self.assertIn("00:00~07:00", data["error"])
+        self.assertEqual(data["all_courts"], old)
+        self.assertEqual(data["last_update"], "last-success")
+        self.assertFalse(session.authenticated)
+
+    def test_session_is_logged_out_only_before_the_blocked_hours_start(self):
+        for hour, logged_out in ((23, True), (3, False)):
+            with self.subTest(hour=hour):
+                session = Mock(authenticated=True, manual_login=False)
+                with patch.object(monitor, "datetime", wraps=monitor.datetime) as clock:
+                    clock.now.return_value = self.kst(hour, 55 if hour == 23 else 0)
+                    monitor._sn_wait_quiet_hours(session, 60)
+                self.assertEqual(session.logout.called, logged_out)
+
+    def test_scan_stops_when_quiet_hours_begin_midway_and_keeps_collected_results(self):
+        session = Mock(authenticated=True, manual_login=False)
+        session.get_timetable.return_value = TIMETABLE
+        with patch.object(monitor, "sn_quiet_wait_seconds", side_effect=[0, 0, 600]), \
+             patch.object(monitor.time, "sleep"):
+            with self.assertRaises(monitor.QuietHours):
+                monitor.sn_run_once(ACCOUNTS, FACILITIES, session=session)
+        self.assertEqual(session.get_timetable.call_count, 2)
+
+    def test_scan_interrupted_by_quiet_hours_is_not_an_error(self):
+        session = Mock(authenticated=True, manual_login=False)
+        session.wait.side_effect = KeyboardInterrupt
+        with patch.multiple(monitor, _sn_status="scanning", _sn_error=""), \
+             patch.object(monitor, "sn_quiet_wait_seconds", side_effect=[0, 600]), \
+             patch.object(monitor, "sn_run_once", side_effect=monitor.QuietHours()), \
+             patch.object(monitor, "_sn_begin_cycle"), \
+             patch.object(monitor, "_sn_wait_quiet_hours", side_effect=KeyboardInterrupt) as pause:
+            with self.assertRaises(KeyboardInterrupt):
+                monitor._sungnam_monitor_loop(session, ACCOUNTS, FACILITIES, [])
+            self.assertEqual(monitor._sn_status, "scanning")
+        pause.assert_called_once()
+
+
 class CommandLineTests(unittest.TestCase):
     def test_poll_delay_is_random_between_two_and_five_minutes(self):
         with patch.object(monitor.random, "randint", return_value=200) as randint:
@@ -661,6 +755,7 @@ class CommandLineTests(unittest.TestCase):
         session = Mock(authenticated=False, manual_login=False)
         session.wait.side_effect = KeyboardInterrupt
         with patch.object(monitor, "next_poll_delay", return_value=173), \
+             patch.object(monitor, "sn_quiet_wait_seconds", return_value=0), \
              patch.object(monitor, "sn_run_once", return_value=([], [])), \
              patch.object(monitor, "_sn_begin_cycle"):
             with self.assertRaises(KeyboardInterrupt):
@@ -736,6 +831,21 @@ class AutoLoginTests(unittest.TestCase):
              patch("sungnam_client.uc.Browser", return_value=self.browser):
             self.assertTrue(self.client.login("saved-user", "saved-password"))
         self.assertIs(config.call_args.kwargs["headless"], False)
+
+    def test_new_browser_is_set_to_the_site_timezone(self):
+        self.client.browser = None
+        self.browser.main_tab = Mock(send=AsyncMock())
+        with patch("sungnam_client.uc.Config"), patch("sungnam_client.uc.Browser", return_value=self.browser), \
+             patch("sungnam_client.uc.cdp.emulation.set_timezone_override") as override:
+            self.client.login("saved-user", "saved-password")
+        override.assert_called_once_with("Asia/Seoul")
+        self.browser.main_tab.send.assert_awaited_once()
+
+    def test_timezone_failure_does_not_stop_the_login(self):
+        self.client.browser = None
+        self.browser.main_tab = Mock(send=AsyncMock(side_effect=RuntimeError("no emulation")))
+        with patch("sungnam_client.uc.Config"), patch("sungnam_client.uc.Browser", return_value=self.browser):
+            self.assertTrue(self.client.login("saved-user", "saved-password"))
 
 
 class BackgroundBrowserTests(unittest.TestCase):

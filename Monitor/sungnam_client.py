@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 import nodriver as uc
 from bs4 import BeautifulSoup
-from browser_background import create_background_desktop, supports_background
+from browser_background import SITE_TIMEZONE, create_background_desktop, supports_background
 
 
 BASE_URL = "https://res.isdc.co.kr"
@@ -33,6 +33,16 @@ HUMAN_DELAY_RANGE = (0.5, 2.0)
 
 async def _human_pause():
     await asyncio.sleep(random.uniform(*HUMAN_DELAY_RANGE))
+
+
+def _describe_date_state(classes):
+    """달력 날짜 칸의 class를 사람이 읽을 수 있는 상태로 바꾼다."""
+    classes = classes or ""
+    if "notusedate" in classes.split():
+        return "예약 오픈 전"
+    if "closed" in classes.split():
+        return "마감/휴장"
+    return classes.strip() or "예약 불가"
 
 
 class SungnamError(RuntimeError):
@@ -162,6 +172,8 @@ class SungnamClient:
         self._facility_names = {}
         self._date_facilities = {}
         self._closed_dates = {}
+        self._date_state = None
+        self._date_diag = None
         self._load_court_cache()
 
     @property
@@ -223,6 +235,13 @@ class SungnamClient:
         if task is not None and not self.loop.is_closed():
             self.loop.call_soon_threadsafe(task.cancel)
 
+    async def _use_site_timezone(self):
+        """사이트 달력이 예약 오픈 시각을 브라우저 시간대로 해석하므로 한국 시간으로 맞춘다."""
+        try:
+            await self.browser.main_tab.send(uc.cdp.emulation.set_timezone_override(SITE_TIMEZONE))
+        except Exception as exc:
+            logging.warning("[SN] 브라우저 시간대를 %s로 맞추지 못했습니다: %s", SITE_TIMEZONE, exc)
+
     async def _start_browser(self):
         # create()가 실패하면 호출자에게 Browser를 반환하지 않아 실패한 Chrome이
         # 남을 수 있다. 시작 전부터 객체를 보관해 성공/실패 모두 직접 정리한다.
@@ -275,6 +294,7 @@ class SungnamClient:
                 logging.info("[SN] Chrome 백그라운드 실행 시작 (PID=%s)", process.pid)
             else:
                 await self.browser.start()
+            await self._use_site_timezone()
         except BaseException as exc:
             browser = self.browser
             process = browser._process if browser is not None else None
@@ -543,6 +563,27 @@ class SungnamClient:
             return
         raise SungnamError(f"성남 시설 목록에서 {facility_id}를 찾지 못했습니다.")
 
+    async def _calendar_diagnostics(self):
+        """날짜가 열리지 않은 것으로 보일 때 사이트가 달력에 넘긴 기간·시각 값을 한 줄로 돌려준다."""
+        try:
+            return await self._json("""JSON.stringify((() => {
+                const days = Array.from(document.querySelectorAll('.spandate[id]')).map(el => {
+                    const c = el.className.split(/\\s+/);
+                    const kind = c.includes('closed') ? 'C' : c.includes('notusedate') ? 'N' :
+                        c.includes('usedate') ? 'U' : '?';
+                    return el.id.split('-').pop() + kind;
+                }).join(' ');
+                // 달력 스크립트가 읽는 예약 기간·거주 구분 값은 사이트가 숨은 입력란으로 내려준다.
+                const inputs = {};
+                document.querySelectorAll('input[id]').forEach(el => {
+                    if (/(Res|Use|ju_dc|duration|resdate|facId)/i.test(el.id) && el.value !== '' &&
+                        el.type !== 'password') inputs[el.id] = el.value;
+                });
+                return {now: String(new Date()), inputs: inputs, days: days};
+            })())""")
+        except Exception:
+            return None
+
     async def _select_date(self, date):
         self._date_closed = False
         await self._wait_element(".spandate")
@@ -563,6 +604,7 @@ class SungnamClient:
                 return {
                     ready: (!!(events && events.click && events.click.length) || closed) && jQuery.active === 0,
                     closed: closed,
+                    classes: el ? el.className : null,
                     enabled: !!el && el.classList.contains('usedate') &&
                         !el.classList.contains('closed') && !el.classList.contains('notusedate')
                 };
@@ -573,7 +615,9 @@ class SungnamClient:
         else:
             raise SungnamError("성남 달력 초기화가 완료되지 않았습니다.")
         self._date_closed = calendar.get("closed") is True
+        self._date_state = calendar.get("classes")
         if calendar.get("enabled") is not True:
+            self._date_diag = await self._calendar_diagnostics()
             return False
         await self._click(f'.spandate[id={json.dumps(date)}]', element=element)
         selected = await self._json("JSON.stringify(document.querySelector('#resdate')?.value)")
@@ -669,6 +713,8 @@ class SungnamClient:
         if self._closed_dates.get((facility_id, date), 0) > time.monotonic():
             return "<p>이용가능한 시간이 없습니다</p>"
         tried = []
+        states = {}
+        diag = None
         while True:
             # 시설을 처음 열면 그룹과 코트 이름을 알게 되므로 후보를 매번 다시 계산한다.
             candidates = [c for c in self._court_candidates(facility_id, day_kind) if c not in tried]
@@ -676,8 +722,10 @@ class SungnamClient:
                 break
             candidate = candidates[0]
             if tried:
-                logging.info("[SN] %s %s: 달력이 닫혀 있어 같은 시설의 다른 코트(%s)를 확인합니다.", facility_id, date_str, candidate)
+                logging.debug("[SN] %s %s: 같은 시설의 다른 코트(%s)를 확인합니다.", facility_id, date_str, candidate)
             await self._open_facility(candidate)
+            self._date_state = None
+            self._date_diag = None
             if await self._select_date(date):
                 representative = self._date_facilities.get((facility_id, day_kind))
                 if candidate == facility_id and representative is not None:
@@ -688,8 +736,18 @@ class SungnamClient:
                     self._save_court_cache()
                 return await self._read_popup()
             if not tried and getattr(self, "_date_closed", False):
+                logging.info("[SN] %s %s: 사이트 달력이 마감/휴장으로 표시한 날짜라 시간표를 읽지 않습니다 (%s).",
+                             facility_id, date_str, candidate)
                 return "<p>이용가능한 시간이 없습니다</p>"
+            states[candidate] = self._date_state
+            diag = diag or self._date_diag
             tried.append(candidate)
+        # 아직 예약이 열리지 않은 날짜는 정상 상황이므로 코트마다 나열하지 않고 한 줄로 요약한다.
+        reasons = {_describe_date_state(state) for state in states.values()}
+        logging.info("[SN] %s %s: 확인한 %s개 코트 모두 %s 상태라 조회할 시간표가 없습니다.",
+                     facility_id, date_str, len(tried), "/".join(sorted(reasons)) or "예약 불가")
+        # 직접 본 화면과 다를 때 원인을 찾을 수 있도록 사이트가 달력에 넘긴 값을 남긴다.
+        logging.info("[SN] %s %s 달력 진단: %s", facility_id, date_str, json.dumps(diag, ensure_ascii=False))
         self._closed_dates[facility_id, date] = time.monotonic() + CLOSED_DATE_RECHECK_SECONDS
         return "<p>이용가능한 시간이 없습니다</p>"
 

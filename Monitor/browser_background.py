@@ -3,6 +3,9 @@
 import os
 import sys
 
+# 성남 예약 사이트의 기준 시간대. 사이트 스크립트가 브라우저 시간대로 예약 오픈 시각을 계산한다.
+SITE_TIMEZONE = "Asia/Seoul"
+
 
 def supports_background():
     return sys.platform == "win32" or sys.platform.startswith("linux")

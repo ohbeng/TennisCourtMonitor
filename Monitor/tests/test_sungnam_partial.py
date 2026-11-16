@@ -22,11 +22,14 @@ class PartialSungnamTests(unittest.TestCase):
         self.state.start()
         self.sleep = patch.object(monitor.time, "sleep")
         self.sleep.start()
+        self.quiet = patch.object(monitor, "sn_quiet_wait_seconds", return_value=0)
+        self.quiet.start()
         self.session = Mock(authenticated=False, manual_login=False)
         self.session.login.return_value = True
         self.today = monitor.datetime.now(monitor.KST).strftime("%Y-%m-%d")
 
     def tearDown(self):
+        self.quiet.stop()
         self.sleep.stop()
         self.state.stop()
 
