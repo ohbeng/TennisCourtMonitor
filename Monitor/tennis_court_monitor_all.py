@@ -115,6 +115,7 @@ _sn_last_update = ""
 _sn_status      = "starting"
 _sn_error       = ""
 _sn_collected   = {}
+_sn_failed      = {}
 _sn_targets     = {}
 _sn_cycle_done  = set()
 
@@ -306,10 +307,13 @@ def _sn_scan(session, accounts, facilities, on_result=None):
     relogin_used  = False
 
     with _lock:
-        last_collected = {key: value["last_update"] for key, value in _sn_collected.items()}
+        last_tried = {key: value["last_update"] for key, value in _sn_collected.items()}
+        for key, failed_at in _sn_failed.items():
+            last_tried[key] = max(last_tried.get(key, ""), failed_at)
     # 차단으로 중간에 끊겨도 다음 조회는 아직 못 읽었거나 가장 오래된 구간부터 이어서 한다.
+    # 실패한 구간은 방금 시도한 것으로 보고 뒤로 미뤄, 같은 구간이 계속 실패해도 나머지를 먼저 읽는다.
     pairs = sorted(((fac, i) for fac in facilities for i in range(4)),
-                   key=lambda p: last_collected.get(
+                   key=lambda p: last_tried.get(
                        (p[0]["id"], (today + timedelta(days=p[1])).strftime("%Y-%m-%d")), ""))
 
     for fac, i in pairs:
@@ -324,17 +328,22 @@ def _sn_scan(session, accounts, facilities, on_result=None):
             continue
 
         try:
-            html = sn_get_timetable(session, fac["id"], date_str)
-        except SessionExpired:
-            if relogin_used:
-                raise SessionExpired("성남 재로그인 후에도 세션이 만료되어 이번 조회를 중단합니다.")
-            relogin_used = True
-            logging.warning("[SN] 세션 만료 확인 — 이번 조회에서 1회만 재로그인합니다.")
-            if not _sn_ensure_login(session, accounts):
-                raise LoginFailed("성남 세션 복구 실패")
-            html = sn_get_timetable(session, fac["id"], date_str)
+            try:
+                html = sn_get_timetable(session, fac["id"], date_str)
+            except SessionExpired:
+                if relogin_used:
+                    raise SessionExpired("성남 재로그인 후에도 세션이 만료되어 이번 조회를 중단합니다.")
+                relogin_used = True
+                logging.warning("[SN] 세션 만료 확인 — 이번 조회에서 1회만 재로그인합니다.")
+                if not _sn_ensure_login(session, accounts):
+                    raise LoginFailed("성남 세션 복구 실패")
+                html = sn_get_timetable(session, fac["id"], date_str)
 
-        avail_slots, all_slot_list = sn_parse_timetable(html)
+            avail_slots, all_slot_list = sn_parse_timetable(html)
+        except Exception:
+            with _lock:
+                _sn_failed[fac["id"], date_str] = datetime.now(KST).isoformat()
+            raise
         courts_start, available_start = len(all_courts), len(all_available)
 
         for slot in all_slot_list:
@@ -396,6 +405,9 @@ def _sn_begin_cycle(facilities):
                 targets[fac["id"], date.strftime("%Y-%m-%d")] = fac["name"]
     with _lock:
         _sn_targets, _sn_cycle_done = targets, set()
+        for key in list(_sn_failed):
+            if key not in targets:
+                del _sn_failed[key]
         if _sn_collected:
             for key in list(_sn_collected):
                 if key not in targets:

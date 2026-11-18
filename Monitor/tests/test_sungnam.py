@@ -261,6 +261,14 @@ class BrowserTests(unittest.TestCase):
         with self.assertRaises(AccessBlocked):
             self.client._run(self.client._state())
 
+    def test_error_page_does_not_leave_facility_marked_as_open(self):
+        # 시설을 연 뒤 400 오류 화면에 머물면 다음 조회는 시설 목록부터 다시 열어야 한다.
+        self.client._current_facility = "FAC26"
+        self.client._select_date = AsyncMock(side_effect=SungnamError("400 Bad Request"))
+        with self.assertRaises(SungnamError):
+            self.client.get_timetable("FAC26", "2026-11-18")
+        self.assertIsNone(self.client._current_facility)
+
     def test_ui_failure_is_not_a_session_expiration(self):
         self.client._open_facility = AsyncMock(side_effect=SungnamError("unavailable"))
         with self.assertRaises(SungnamError) as result:

@@ -762,6 +762,11 @@ class SungnamClient:
             self._current_facility = None
             self._manual_waiting = self.manual_login and isinstance(exc, AccessBlocked)
             raise
+        except Exception:
+            # 오류 화면(예: 400 Bad Request)에 머문 채 다음 조회가 시설을 이미 열린 것으로 보고
+            # 이동을 건너뛰면 같은 오류가 반복된다. 다음 조회는 시설 목록부터 다시 연다.
+            self._current_facility = None
+            raise
 
     def _recover_after_timeout(self):
         """응답 없는 Chrome을 버린다. 다음 조회가 새 Chrome을 시작하고 다시 로그인한다."""

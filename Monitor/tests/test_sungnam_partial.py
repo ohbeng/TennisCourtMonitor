@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import tennis_court_monitor_all as monitor
-from sungnam_client import AccessBlocked
+from sungnam_client import AccessBlocked, SungnamError
 from test_sungnam import TIMETABLE, EMPTY_TIMETABLE
 
 
@@ -17,7 +17,7 @@ class PartialSungnamTests(unittest.TestCase):
     def setUp(self):
         self.state = patch.multiple(
             monitor, _sn_available=[], _sn_courts=[], _sn_last_update="", _sn_status="starting",
-            _sn_error="", _sn_collected={}, _sn_targets={}, _sn_cycle_done=set(),
+            _sn_error="", _sn_collected={}, _sn_targets={}, _sn_cycle_done=set(), _sn_failed={},
         )
         self.state.start()
         self.sleep = patch.object(monitor.time, "sleep")
@@ -152,6 +152,28 @@ class PartialSungnamTests(unittest.TestCase):
         self.assertEqual(len(requested), 16)
         self.assertTrue(all(key not in collected for key in requested[:14]))
         self.assertEqual(set(requested[14:]), collected)
+
+    def test_failed_timetable_is_retried_after_the_others_next_scan(self):
+        # 같은 구간이 계속 실패해도 나머지 구간은 다음 조회에서 먼저 수집한다.
+        self.session.authenticated = True
+        monitor._sn_begin_cycle(FACILITIES)
+        self.session.get_timetable.side_effect = SungnamError("400 Bad Request")
+        with self.assertRaises(SungnamError):
+            monitor.sn_run_once(ACCOUNTS, FACILITIES, session=self.session)
+        failed = self.session.get_timetable.call_args.args
+        requested = []
+        def get_timetable(*args):
+            requested.append(args)
+            if args == failed:
+                raise SungnamError("400 Bad Request")
+            return TIMETABLE
+        self.session.get_timetable.side_effect = get_timetable
+        monitor._sn_begin_cycle(FACILITIES)
+        with self.assertRaises(SungnamError):
+            monitor.sn_run_once(ACCOUNTS, FACILITIES, session=self.session, on_result=monitor._sn_publish_result)
+        self.assertEqual(len(requested), 16)
+        self.assertEqual(requested[-1], failed)
+        self.assertEqual(self.data()["progress"], {"completed": 15, "total": 16})
 
     def test_session_is_logged_out_every_fifth_completed_cycle(self):
         self.session.authenticated = True
