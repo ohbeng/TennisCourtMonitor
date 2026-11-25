@@ -73,6 +73,8 @@ POLL_MIN_SECONDS = 400
 POLL_MAX_SECONDS = 800
 # 세션이 오래 유지되지 않도록 이 횟수만큼 조회를 마칠 때마다 로그아웃하고 다음 조회에서 다시 로그인한다.
 SN_RELOGIN_EVERY_CYCLES = 5
+# Chrome이 일시적으로 시작하지 못하면 이 간격(초)으로 다시 시도하고, 마지막 값을 계속 쓴다.
+SN_LAUNCH_RETRY_DELAYS = (60, 120, 300, 600)
 # 성남 사이트는 KST 00:00~07:00에 조회를 막는다. 조회가 00:00에 걸치지 않도록 23:50부터 쉬고,
 # 07:00 직후에 바로 접속하지 않도록 무작위로 조금 더 기다린 뒤 다시 조회한다.
 SN_QUIET_START = (23, 50)
@@ -1058,6 +1060,7 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
     global _sn_available, _sn_courts, _sn_last_update, _sn_status, _sn_error
     sn_prev_key = [""]
     completed_cycles = 0
+    launch_failures = 0
     while not _sn_stop_event.is_set():
         quiet_seconds = sn_quiet_wait_seconds()
         if quiet_seconds > 0:
@@ -1082,6 +1085,7 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
                 _sn_courts      = courts
                 _sn_last_update = datetime.now(KST).isoformat()
                 _sn_status, _sn_error = "ok", ""
+            launch_failures = 0
             logging.info(f"[SN] 완료: 예약가능 {len(avail)}개 / 전체 {len(courts)}개")
             # 알림 체크: courts 에서 notify 조건 맞는 가용 슬롯 추출
             if notify_facs:
@@ -1106,9 +1110,15 @@ def _sungnam_monitor_loop(session, accounts, facilities, notify_facs):
                 _sn_error = str(e)
             if isinstance(e, BrowserLaunchError):
                 logging.error("[SN] %s", e)
-                logging.error("[SN] Chrome 시작 재시도를 중단합니다. 용인 모니터링은 계속됩니다.")
-                return
-            if isinstance(e, AccessBlocked) and not manual_login:
+                if not e.retryable:
+                    logging.error("[SN] Chrome 시작 재시도를 중단합니다. 용인 모니터링은 계속됩니다.")
+                    return
+                # 일시적인 시작 실패로 성남 조회를 영구히 멈추지 않는다. 점점 길게 쉬며 계속 시도한다.
+                retry_delay = SN_LAUNCH_RETRY_DELAYS[min(launch_failures, len(SN_LAUNCH_RETRY_DELAYS) - 1)]
+                launch_failures += 1
+                logging.warning("[SN] Chrome 시작에 %s번 연속 실패했습니다. %s초 후 다시 시작합니다. 이전 수집 결과는 유지합니다.",
+                                launch_failures, retry_delay)
+            elif isinstance(e, AccessBlocked) and not manual_login:
                 # 차단은 시간이 지나면 풀리므로 중단하지 않고 다음 주기에 다시 조회한다.
                 logging.warning("[SN] %s", e)
                 logging.info("[SN] 이전 수집 결과를 유지합니다. %s초 후 다시 조회합니다.", retry_delay)

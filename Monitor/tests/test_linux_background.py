@@ -43,12 +43,14 @@ class LinuxLaunchTests(unittest.IsolatedAsyncioTestCase):
         writer.wait_closed.assert_awaited_once()
 
     async def test_browser_exit_during_startup_is_reported(self):
-        with self.assertRaisesRegex(BrowserLaunchError, "종료 코드: 3"):
+        with self.assertRaisesRegex(BrowserLaunchError, "종료 코드: 3") as failure:
             await _wait_for_browser_port("127.0.0.1", 1234, Mock(returncode=3))
+        self.assertTrue(failure.exception.retryable)
 
     async def test_browser_startup_deadline_is_bounded(self):
-        with self.assertRaisesRegex(BrowserLaunchError, "DevTools"):
+        with self.assertRaisesRegex(BrowserLaunchError, "DevTools") as failure:
             await _wait_for_browser_port("127.0.0.1", 1234, Mock(returncode=None), timeout=0)
+        self.assertTrue(failure.exception.retryable)
 
     async def test_launch_uses_virtual_screen_without_changing_parent_display(self):
         raw = Mock(pid=12345, returncode=0, wait=AsyncMock(return_value=0),
@@ -118,8 +120,9 @@ class LinuxClientTests(unittest.TestCase):
         client = SungnamClient("unused-profile", manual_login=True)
         try:
             with patch("sungnam_client.sys.platform", "linux"), patch.dict(os.environ, {}, clear=True):
-                with self.assertRaisesRegex(BrowserLaunchError, "DISPLAY.*--sn-background"):
+                with self.assertRaisesRegex(BrowserLaunchError, "DISPLAY.*--sn-background") as failure:
                     client._run(client._start_browser())
+            self.assertFalse(failure.exception.retryable)
         finally:
             client.close()
 
@@ -148,8 +151,9 @@ class LinuxClientTests(unittest.TestCase):
         client = SungnamClient("unused-profile", background=True)
         try:
             with patch("sungnam_client.uc.Config", side_effect=FileNotFoundError("not found")):
-                with self.assertRaisesRegex(BrowserLaunchError, "Chrome/Chromium.*--sn-browser"):
+                with self.assertRaisesRegex(BrowserLaunchError, "Chrome/Chromium.*--sn-browser") as failure:
                     client._run(client._start_browser())
+            self.assertFalse(failure.exception.retryable)
         finally:
             client.close()
 

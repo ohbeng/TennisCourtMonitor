@@ -126,6 +126,7 @@ class BrowserTests(unittest.TestCase):
             with self.assertRaises(BrowserLaunchError) as failure:
                 self.client.login("", "")
         self.assertIn("프로필", str(failure.exception))
+        self.assertTrue(failure.exception.retryable)
         browser.aclose.assert_awaited_once()
         self.assertIsNone(self.client.browser)
 
@@ -636,14 +637,38 @@ class ScanTests(unittest.TestCase):
         self.session.login.assert_called_once_with("", "")
         self.session.get_timetable.assert_not_called()
 
-    def test_browser_start_failure_does_not_retry_or_overwrite_data(self):
+    def test_permanent_browser_setup_failure_does_not_retry_or_overwrite_data(self):
         old = [{"court": "last successful scan"}]
         with patch.multiple(monitor, _sn_courts=old, _sn_last_update="last-success"), \
-             patch.object(monitor, "sn_run_once", side_effect=BrowserLaunchError("profile busy")):
+             patch.object(monitor, "sn_run_once", side_effect=BrowserLaunchError("Chrome not installed")):
             monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
             self.assertEqual(monitor._sn_courts, old)
             self.assertEqual(monitor._sn_last_update, "last-success")
             self.session.wait.assert_not_called()
+
+    def test_transient_browser_start_failure_is_retried_with_growing_delay_and_keeps_data(self):
+        old = [{"court": "last successful scan"}]
+        failure = BrowserLaunchError("DevTools not ready", retryable=True)
+        self.session.wait.side_effect = [None, None, None, None, None, KeyboardInterrupt]
+        with patch.multiple(monitor, _sn_courts=old, _sn_last_update="last-success"), \
+             patch.object(monitor, "sn_run_once", side_effect=failure):
+            with self.assertRaises(KeyboardInterrupt):
+                monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, FACILITIES)
+            data = monitor.build_sungnam_payload()
+        self.assertEqual([call.args[0] for call in self.session.wait.call_args_list], [60, 120, 300, 600, 600, 600])
+        self.assertEqual(data["status"], "error")
+        self.assertEqual(data["all_courts"], old)
+        self.assertEqual(data["last_update"], "last-success")
+
+    def test_successful_scan_resets_launch_retry_delay(self):
+        failure = BrowserLaunchError("DevTools not ready", retryable=True)
+        self.session.wait.side_effect = [None, None, None, KeyboardInterrupt]
+        with patch.object(monitor, "sn_run_once", side_effect=[failure, failure, ([], []), failure]), \
+             patch.object(monitor, "next_poll_delay", return_value=555), \
+             patch.object(monitor, "_sn_begin_cycle"):
+            with self.assertRaises(KeyboardInterrupt):
+                monitor._sungnam_monitor_loop(self.session, ACCOUNTS, FACILITIES, [])
+        self.assertEqual([call.args[0] for call in self.session.wait.call_args_list], [60, 120, 555, 60])
 
     def test_program_shutdown_requests_browser_cleanup_and_waits_for_thread(self):
         thread = Mock(is_alive=Mock(return_value=False))

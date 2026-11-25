@@ -54,7 +54,10 @@ class OperationTimeout(SungnamError):
 
 
 class BrowserLaunchError(SungnamError):
-    pass
+    # retryable: Chrome이 이번에만 시작하지 못한 경우. 설정 오류(Chrome 없음, 화면 없음)는 재시도해도 소용없다.
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class AccessBlocked(SungnamError):
@@ -78,7 +81,7 @@ async def _wait_for_browser_port(host, port, process, timeout=20):
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         if process.returncode is not None:
-            raise BrowserLaunchError(f"Chrome 시작 중 종료되었습니다 (종료 코드: {process.returncode}).")
+            raise BrowserLaunchError(f"Chrome 시작 중 종료되었습니다 (종료 코드: {process.returncode}).", retryable=True)
         try:
             _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=0.5)
         except (OSError, asyncio.TimeoutError):
@@ -87,7 +90,7 @@ async def _wait_for_browser_port(host, port, process, timeout=20):
         writer.close()
         await writer.wait_closed()
         return
-    raise BrowserLaunchError(f"Chrome DevTools 연결 준비가 {timeout}초 안에 완료되지 않았습니다.")
+    raise BrowserLaunchError(f"Chrome DevTools 연결 준비가 {timeout}초 안에 완료되지 않았습니다.", retryable=True)
 
 
 def validate_timetable(status, url, html):
@@ -317,7 +320,7 @@ class SungnamClient:
             )
             if details:
                 logging.error("[SN] Chrome 시작 오류: %s", details)
-            raise BrowserLaunchError(message) from exc
+            raise BrowserLaunchError(message, retryable=True) from exc
 
     async def _json(self, expression, *, await_promise=False):
         # nodriver 0.50은 false/null을 RemoteObject로 반환할 수 있다.
