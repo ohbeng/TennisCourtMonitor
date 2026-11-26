@@ -807,9 +807,11 @@ def yn_scan_one_court(court, target_dates, sess_holder, creds, cred_idx):
                 uid, pw  = creds[(cred_idx + i) % len(creds)]
                 new_sess = yn_make_session()
                 if yn_group_login(new_sess, uid, pw):
+                    sess_holder[0].close()
                     sess_holder[0] = new_sess
                     result = yn_get_time_slots(sess_holder[0], resve_id, apply_url, date_yyyymmdd)
                     break
+                new_sess.close()
         if result is None or result.get("outside_range"):
             continue
 
@@ -923,19 +925,23 @@ def yn_run_once():
         finally:
             sess_pool.put(holder)
 
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(_worker, c, i % len(creds)): c
-                   for i, c in enumerate(courts)}
-        for fut in as_completed(futures):
-            court = futures[fut]
-            try:
-                a, d = fut.result()
-                all_available.extend(a)
-                all_court_data.extend(d)
-            except Exception as exc:
-                logging.error(f"[YN] 워커 오류 [{court['name']}]: {exc}")
-            completed += 1
-            logging.info(f"[YN] ✅ {completed}/{len(courts)}: {court['name']}")
+    try:
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_worker, c, i % len(creds)): c
+                       for i, c in enumerate(courts)}
+            for fut in as_completed(futures):
+                court = futures[fut]
+                try:
+                    a, d = fut.result()
+                    all_available.extend(a)
+                    all_court_data.extend(d)
+                except Exception as exc:
+                    logging.error(f"[YN] 워커 오류 [{court['name']}]: {exc}")
+                completed += 1
+                logging.info(f"[YN] ✅ {completed}/{len(courts)}: {court['name']}")
+    finally:
+        while not sess_pool.empty():
+            sess_pool.get_nowait()[0].close()
 
     if mon_table:
         all_available  = [e for e in all_available  if yn_passes_filter(e, mon_table)]

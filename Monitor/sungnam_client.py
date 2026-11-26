@@ -680,7 +680,24 @@ class SungnamClient:
         finally:
             self.page = popup if keep_popup else parent
             if popup is not None and not keep_popup:
-                await popup.close()
+                await self._discard_tab(popup)
+
+    @staticmethod
+    async def _discard_tab(tab):
+        """팝업 탭을 닫고 nodriver가 탭마다 여는 DevTools WebSocket도 닫는다.
+
+        Tab.close()는 Chrome의 탭만 닫고 WebSocket은 남겨 두므로, 조회할 때마다
+        소켓(파일 디스크립터)이 쌓여 'Too many open files'가 발생한다.
+        """
+        try:
+            await asyncio.wait_for(tab.close(), timeout=5)
+        except Exception as exc:
+            logging.debug("[SN] 팝업 탭 닫기에 실패했습니다: %s", exc)
+        finally:
+            try:
+                await asyncio.wait_for(tab.aclose(), timeout=5)
+            except Exception as exc:
+                logging.debug("[SN] 팝업 탭 연결 정리에 실패했습니다: %s", exc)
 
     _DAY_LABELS = {0: "평일", 5: "토요일", 6: "일요일"}
 

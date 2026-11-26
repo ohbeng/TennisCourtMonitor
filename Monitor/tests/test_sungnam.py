@@ -494,7 +494,7 @@ class BrowserTests(unittest.TestCase):
         parent = self.client.page
         parent.target.target_id = "parent"
         parent.select = AsyncMock(return_value=Mock(click=AsyncMock()))
-        popup = Mock(get_content=AsyncMock(return_value=TIMETABLE), close=AsyncMock())
+        popup = Mock(get_content=AsyncMock(return_value=TIMETABLE), close=AsyncMock(), aclose=AsyncMock())
         popup.target.target_id, popup.target.url = "popup", URL
         self.client.browser = Mock(update_targets=AsyncMock(), tabs=[parent, popup])
         self.client._state = AsyncMock(return_value={"ready": True, "url": URL})
@@ -502,8 +502,14 @@ class BrowserTests(unittest.TestCase):
             self.assertEqual(self.client._run(self.client._read_popup()), TIMETABLE)
             self.assertIs(self.client.page, parent)
             popup.close.assert_awaited_once()
+            popup.aclose.assert_awaited_once()
         finally:
             self.client.browser = None
+
+    def test_popup_websocket_is_closed_even_if_closing_the_tab_fails(self):
+        popup = Mock(close=AsyncMock(side_effect=ConnectionError("gone")), aclose=AsyncMock())
+        self.client._run(self.client._discard_tab(popup))
+        popup.aclose.assert_awaited_once()
 
     def test_blocked_popup_is_kept_open_for_manual_recovery(self):
         parent = self.client.page
